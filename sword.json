@@ -1,36 +1,27 @@
 {
     "template": {
         "default" : {
-            "raw" : {
-                "ingredientPattern": "SH,M_,T_",
-                "ingredients": {
-                    "T": { "type": "item", "code": "blade-%type%-%blade%-*", "name": "material" },
-                    "M": { "type": "item", "code": "pommel-guard-%hilt%-%metal%"  },
-                    "H": { "type": "item", "code": "game:hammer-*", "isTool": true, "toolDurabilityCost": 10 },
-                    "S": { "type": "item", "code": "handle-short" }
-                },
-                "copyAttributesFrom": "S",
-                "width": 2,
-                "height": 3,
-                "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}", "quantity": 1, "attributes": { "extraTexture": "game:block/metal/plate/%metal%"}}
+            "ingredientPattern": "SH,M_,T_",
+            "ingredients": {
+                "T": { "type": "item", "code": "blade-%type%-%blade%-*", "name": "material" },
+                "M": { "type": "item", "code": "pommel-guard-%hilt%-%metal%"  },
+                "H": { "type": "item", "code": "game:hammer-*", "isTool": true, "toolDurabilityCost": 10 },
+                "S": { "type": "item", "code": "handle-short" }
             },
-            "format" : "\t{\n\t\t%ingredientPattern%, %copyAttributesFrom%, %width%, %height%,\n\t\t%ingredients%,\n\t\t%output%\n\t}"
+            "copyAttributesFrom": "S",
+            "width": 2,
+            "height": 3,
+            "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}", "quantity": 1, "attributes": { "extraTexture": "game:block/metal/plate/%metal%"}}
         },
         "noAttribute" : {
-            "raw" : {
-                "ingredientPattern": "SH,M_,T_",
-                "ingredients": {
-                    "T": { "type": "item", "code": "blade-%type%-%blade%-*", "name": "material" },
-                    "M": { "type": "item", "code": "pommel-guard-%hilt%-*"  },
-                    "H": { "type": "item", "code": "game:hammer-*", "isTool": true, "toolDurabilityCost": 10 },
-                    "S": { "type": "item", "code": "handle-short" }
-                },
-                "copyAttributesFrom": "S",
-                "width": 2,
-                "height": 3,
-                "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}", "quantity": 1 }
+            "copyFrom" : "default",
+            "ingredients": {
+                "T": { "type": "item", "code": "blade-%type%-%blade%-*", "name": "material" },
+                "M": { "type": "item", "code": "pommel-guard-%hilt%-*"  },
+                "H": { "type": "item", "code": "game:hammer-*", "isTool": true, "toolDurabilityCost": 10 },
+                "S": { "type": "item", "code": "handle-short" }
             },
-            "format" : "\t{\n\t\t%ingredientPattern%, %copyAttributesFrom%, %width%, %height%,\n\t\t%ingredients%,\n\t\t%output%\n\t}"
+            "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}", "quantity": 1 }
         }
     },
     "grammars": [
@@ -53,6 +44,7 @@
     ],
     "output" : "output/sword.json",
     "static" : {
+        "format": [ "\t{\n\t\t%ingredientPattern%, %copyAttributesFrom%, %width%, %height%,\n\t\t%ingredients%,\n\t\t%output%\n\t}" ],
         "code" : ["%type%-%hilt%-%blade%-{material}"],
         "types": [ "cross","curve","flat","rapier" ],
         "guard": [ "broad","long","thin" ],
