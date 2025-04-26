@@ -130,6 +130,12 @@ class TemplateJSON(TypedDict):
     output : str
     static : Dict[str,List[str]]
 
+def warning(message: str) -> str:
+    return f"{Ansi.YELLOW}[⚠️]{Ansi.RESET} {message}"
+
+def error(message: str) -> str:
+    return f"{Ansi.RED}[❗]{Ansi.RESET} {message}"
+
 class Grammar():
     def __init__(self,definition : TemplateJSONGrammar, static : Dict[str, List[str]], templates : Dict[ str, Dict ] ):
         def substitute(list : list[str],static : Dict[str,List[str]],ignore=False ):
@@ -141,7 +147,7 @@ class Grammar():
                     if table:
                         output.extend(table)
                     elif not ignore:
-                        raise ValueError(f"Static substitution failed: {Ansi.YELLOW}@{key}{Ansi.RESET} not found.")
+                        raise ValueError(f"Static substitution failed: '{Ansi.YELLOW}@{key}{Ansi.RESET}' not found.")
                 else:
                     output.append(token)
             return output
@@ -149,15 +155,14 @@ class Grammar():
         self.keys = []
         
         if "keys" not in definition or not isinstance(definition["keys"], list):
-            raise ValueError(f"Grammar definition must contain a {Ansi.YELLOW}'keys'{Ansi.RESET} list.")
+            raise ValueError(error(f"Grammar definition must contain '{Ansi.YELLOW}keys{Ansi.RESET}' list."))
         
         for key in definition["keys"]:
             if "key" not in key or "value" not in key:
-                raise ValueError(f"Each key entry must contain {Ansi.YELLOW}'key'{Ansi.RESET} and {Ansi.YELLOW}'value'{Ansi.RESET}: {json.dumps(key)}")
+                raise ValueError(f"Each key entry must contain '{Ansi.YELLOW}key{Ansi.RESET}' and '{Ansi.YELLOW}value{Ansi.RESET}': {json.dumps(key)}")
             keyNames = [k.strip() for k in key["key"].split(",")]
             exValues = substitute(key["value"], static)
             keyValues= []
-            print(keyNames)
 
             for v in exValues:
                 if ( isinstance(v,list)):
@@ -165,11 +170,11 @@ class Grammar():
                 elif len(keyNames) == 1:
                     keyValues.append([v])
                 else:
-                    raise ValueError(f"Expected list of values for keys {keyNames}, but got single value '{v}'.")
+                    raise ValueError(f"Expected list of values for keys {Ansi.YELLOW}{keyNames}{Ansi.RESET}, but got single value '{v}'.")
             
             for v in keyValues:
                 if len(v) != len(keyNames):
-                    raise ValueError(f"Mismatch: keys {keyNames} expect {len(keyNames)} values but got {v}.")
+                    raise ValueError(f"Mismatch: keys {Ansi.YELLOW}{keyNames}{Ansi.RESET} expect {len(keyNames)} values but got {v}.")
             
             self.keys.append({ "key" : keyNames, "value" : keyValues })
         
@@ -179,10 +184,10 @@ class Grammar():
         self.remove = definition.get( "remove", [] )
 
         if not isinstance(self.remove, list):
-            raise ValueError(f"Grammar 'remove' must be a list, got {type(self.remove).__name__}.")
+            raise ValueError(f"Grammar '{Ansi.YELLOW}remove{Ansi.RESET}' must be a list, got {type(self.remove).__name__}.")
 
         if not isinstance(self.substitute, list):
-            raise ValueError(f"Grammar 'substitute' must be a list, got {type(self.substitute).__name__}.")
+            raise ValueError(f"Grammar '{Ansi.YELLOW}substitute{Ansi.RESET}' must be a list, got {type(self.substitute).__name__}.")
 
         # evil hack to convert to string because statics are lists, and code expects a string
         self.code = substitute([definition.get("code", "@code")],static,True)[0]
@@ -217,7 +222,7 @@ class RecipeExpander:
             if copyFrom:
                 baseTemplate = data["template"].get(copyFrom)
                 if not baseTemplate:
-                    raise ValueError(f"Template '{templateName}' tried to copy from unknown template '{copyFrom}'.")
+                    raise ValueError(f"Template '{Ansi.YELLOW}{templateName}{Ansi.RESET}' tried to copy from unknown template '{Ansi.YELLOW}{copyFrom}{Ansi.RESET}'.")
                 
                 merged = copy.deepcopy(baseTemplate)
                 local = {k: v for k, v in template.items() if k != "copyFrom"}  # Drop "copyFrom"
@@ -233,7 +238,7 @@ class RecipeExpander:
                 self.grammars.append( Grammar( grammar, data["static"], self.templates ))
                 index += 1
         except ValueError as e:
-            raise ValueError(f"Grammar {index} : {e}")
+            raise ValueError(f"Grammar {Ansi.YELLOW}{index}{Ansi.RESET} : {e}")
         
         self.output = data["output"]
 
@@ -277,13 +282,13 @@ class RecipeExpander:
                 
                 for part in parts[:-1]:
                     if part not in current:
-                        raise KeyError(f"Cannot remove '{dotted_key}': '{part}' does not exist.")
+                        raise KeyError(f"Cannot remove '{Ansi.YELLOW}{dotted_key}{Ansi.RESET}': '{part}' does not exist.")
                     if not isinstance(current[part], dict):
-                        raise KeyError(f"Cannot remove '{dotted_key}': '{part}' is not a dictionary.")
+                        raise KeyError(f"Cannot remove '{Ansi.YELLOW}{dotted_key}{Ansi.RESET}': '{part}' is not a dictionary.")
                     current = current[part]
 
                 if parts[-1] not in current:
-                    raise KeyError(f"Cannot remove '{dotted_key}': final key '{parts[-1]}' does not exist.")
+                    raise KeyError(f"Cannot remove '{Ansi.YELLOW}{dotted_key}{Ansi.RESET}': final key '{parts[-1]}' does not exist.")
 
                 current.pop(parts[-1])
 
@@ -311,7 +316,7 @@ class RecipeExpander:
 
             unused_keys = [key for key in template if f"%{key}%" not in templateFormat]
             if unused_keys:
-                print(f"{Ansi.YELLOW}[!]{Ansi.RESET} Warning: Grammar template has unused keys: {Ansi.YELLOW}{unused_keys}{Ansi.RESET}")
+                print(warning(f"Grammar template has unused keys: {Ansi.YELLOW}{unused_keys}{Ansi.RESET}"))
             for key, value in template.items():
                 templateFormat = templateFormat.replace(f"%{key}%",f"\"{key}\":{json.dumps(value, separators=(",", ":"))}")
             output.append(substitute(templateFormat, result))
@@ -375,11 +380,11 @@ def main():
         print(line)
         print(f"\\{horizontal}/")
     
-    parser = argparse.ArgumentParser(description="Converts recipe grammar definitions into full recipe files.")
-    parser.add_argument("source", help="Path to the JSON file containing recipe grammar definitions.")
-    parser.add_argument("-dry", "-d", action="store_true", help="Dry run; only print outputs instead of writing files.")
-    parser.add_argument("-quiet", "-q", action="store_false", help="Makes the output less verbose.")
-    parser.add_argument("-strict", "-s", action="store_true", help="Enforces JSON for processing instead of JSON5.")
+    parser = argparse.ArgumentParser(description="Expands recipe grammar definitions into full recipe files for Vintage Story mods.")
+    parser.add_argument("source", help="Path to the input grammar JSON (or JSON5) file.")
+    parser.add_argument("-dry", "-d", action="store_true", help="Dry run: preview generated outputs without writing files.")
+    parser.add_argument("-verbose", "-v", action="store_true", help="Enable verbose output, shows internal recipe states.")
+    parser.add_argument("-strict", "-s", action="store_true", help="Force strict JSON parsing (even if JSON5 support is available).")
     args = parser.parse_args()
     
     if platform.system() == "Windows":
@@ -395,26 +400,36 @@ def main():
         import json as strict_json
         global json
         json = strict_json
-        print(f"{Ansi.GREEN}[Strict]{Ansi.RESET} Enforcing strict JSON parsing mode.")
-    elif ( json5 ):
-        print( f"{Ansi.YELLOW}[!]{Ansi.RESET} JSON5 is available, this allows for a more relaxed format.")
+        print(f"{Ansi.GREEN}[🚀]{Ansi.RESET} Enforcing strict JSON parsing mode.")
+    elif json5:
+        print(f"{Ansi.CYAN}[ℹ️]{Ansi.RESET} JSON5 detected: relaxed parsing is available.")
     else:
-        print( f"{Ansi.YELLOW}[!]{Ansi.RESET} Using strict JSON parsing, if you encounter problems\n  install json5: pip install json5")
+        print(f"{Ansi.YELLOW}[⚡]{Ansi.RESET} JSON5 not available. Using strict JSON parsing.\n     To enable relaxed parsing, install with: pip install json5")
+
+    error = False
 
     try:
         with open(args.source, "r", encoding="utf-8") as file:
             data = json.load(file)
 
         expander = RecipeExpander(data)
-        expander.expand(args.dry,args.quiet)
+        expander.expand(args.dry,args.verbose)
     except FileNotFoundError:
-        print(f"{Ansi.RED}[ ERROR ]{Ansi.RESET} File '{args.source}' not found.")
+        print(error(f"File '{args.source}' not found."))
     except KeyError as e:
-        print(f"{Ansi.RED}[ ERROR ]{Ansi.RESET} Missing required key: {e}")
+        print(error(f"Missing required key: {e}"))
+        error = True
     except ValueError as e:
-        print(f"{Ansi.RED}[ ERROR ]{Ansi.RESET} {e}")
+        print(error(e))
+        error = True
     except PermissionError as e:
-        print(f"{Ansi.RED}[ ERROR ]{Ansi.RESET} Could not write output: {e}")
+        print(error(f"Could not write output: {e}"))
+        error = True
+    finally:
+        if ( error ):
+            print(error("Recipe generation failed. Please check the input grammar and try again."))
+        else:
+            print(f"{Ansi.GREEN}[🎉]{Ansi.RESET} Generation completed successfully!")
 
 if __name__ == "__main__":
     main()
