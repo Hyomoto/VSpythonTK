@@ -96,6 +96,11 @@ except ImportError:
     import json
     json5 = False
 
+class Error:
+    NONE = 0
+    FILE = 1
+    OTHER = 2
+
 class Ansi:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -406,8 +411,8 @@ def main():
     else:
         print(f"{Ansi.YELLOW}[⚡]{Ansi.RESET} JSON5 not available. Using strict JSON parsing.\n     To enable relaxed parsing, install with: pip install json5")
 
-    error = False
-
+    hadError = Error.NONE
+    
     try:
         with open(args.source, "r", encoding="utf-8") as file:
             data = json.load(file)
@@ -416,20 +421,23 @@ def main():
         expander.expand(args.dry,args.verbose)
     except FileNotFoundError:
         print(error(f"File '{args.source}' not found."))
+        hadError = Error.FILE
     except KeyError as e:
         print(error(f"Missing required key: {e}"))
-        error = True
+        hadError = Error.OTHER
     except ValueError as e:
         print(error(e))
-        error = True
+        hadError = Error.OTHER
     except PermissionError as e:
         print(error(f"Could not write output: {e}"))
-        error = True
+        hadError = Error.OTHER
     finally:
-        if ( error ):
-            print(error("Recipe generation failed. Please check the input grammar and try again."))
-        else:
+        if hadError == Error.NONE:
             print(f"{Ansi.GREEN}[🎉]{Ansi.RESET} Generation completed successfully!")
+        elif hadError == Error.FILE:
+            print(error("Check the filename and filepath and try again."))
+        else:
+            print(error("Recipe generation failed. Please check the input grammar and try again."))
 
 if __name__ == "__main__":
     main()
