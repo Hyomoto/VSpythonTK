@@ -1,80 +1,138 @@
-# Generation.py
-by Devon "Hyomoto" Mullane, 2025
+# 🛠️ Vintage Story Recipe Expander
 
-This script expands compact JSON recipe grammar definitions into fully realized
-recipe JSON entries for use in Vintage Story mods.
+**by Devon "Hyomoto" Mullane, 2025**
 
-It supports:
-- Template-based recipe definition using raw JSON structures.
-- Substitution of named fields across multiple permutations of materials.
-- Static lookup tables (`@metal`, `@skip`, etc.) for value injection.
-- Optional wildcard filtering via `allow` and `skip` pattern rules (using fnmatch).
-- Template inheritance using `copyFrom` for duplicating and modifying existing templates.
-- Per-grammar template mutation using `remove` and `substitute` directives.
-- Grouped multi-key substitutions (e.g., "metal,bits" mapped together).
-- Dry-run mode to preview results without generating output files.
-- Strict JSON mode (-strict) to enforce standard JSON parsing even if JSON5 is installed.
+A powerful script to expand compact **recipe grammar definitions** into fully realized **Vintage Story** mod JSON recipes.
 
-Input Structure:
-----------------
-The source JSON must include the following top-level fields:
+---
 
-- "template": A dictionary of named templates, each representing the Vintage Story recipe structure directly.
-  - Templates may optionally specify a `copyFrom` field to clone and override an existing template.
+## ✨ Features
 
-- "grammars": A dictionary of substitution rules. Each grammar defines:
-  - "keys": (Required) A list of { "key": "name", "value": [...] } entries. 
-    - Keys may be comma-separated to allow grouped substitution (e.g., "metal,bits").
-  - "code": (Optional) A format string defining the output item code. If not specified, looks for "code" in static.
-  - "format": (Optional) A format string used to map template fields into the final JSON entry. If not specified, looks for "format" in static.
-  - "template": (Optional) The template to use. If not specified, "default" is assumed.
-  - "remove": (Optional) A list of dotted key paths to delete from the template.
-  - "substitute": (Optional) A list of { "key": dotted_key, "value": replacement_value } entries to override fields before expansion.
-  - "allow": (Optional) A list of wildcard patterns to include.
-  - "skip": (Optional) A list of wildcard patterns to exclude.
+- **Template-based generation**  
+  Define reusable recipe templates with minimal duplication.
+- **Dynamic substitution**  
+  Use named fields and static lookups to create massive variant sets.
+- **Wildcard allow/skip**  
+  Fine-grained control over which outputs are created.
+- **Template inheritance**  
+  Use `copyFrom` to clone and modify templates easily.
+- **Smart remove/substitute**  
+  Mutate nested template fields dynamically per grammar.
+- **Strict or relaxed JSON parsing**  
+  Use `-strict` to enforce JSON, or auto-detect JSON5 support.
+- **Colorized output and rich warnings**  
+  Built-in friendly CLI output for easy debugging.
 
-- "output": The file path where the result will be written (e.g., "recipes/dagger.json").
+---
 
-- "static": A lookup table used to inject lists of values into grammars, such as:
-  "metal": ["copper", "tinbronze", "steel"]
-  - "format" : (Reserved) If specified, grammars missing a 'format' field will use this value.
-  - "code" : (Reserved) If specified, grammars missing a 'code' field will use this value.
+## 📦 Installation
 
-Usage:
-------
-To generate recipe files:
-    python generation.py path/to/input.json
+> Requires Python 3.10+ (for type hinting improvements).
 
-To preview outputs without writing files:
-    python generation.py path/to/input.json -dry
+Install `json5` for relaxed grammar file parsing:
+```bash
+pip install json5
+```
+*(Optional but allows parity with VS recipe definitions.)*
 
-To force strict JSON parsing mode:
-    python generation.py path/to/input.json -strict
+---
 
-Examples:
----------
-Given a grammar with:
-    "template": "dagger"
-    "keys": [ {"key": "metal", "value": ["@metal"]} ]
-    "code": "%type%-%blade%-%metal%"
-    "format": "%blade%-%metal%"
+## 🚀 Usage
 
-And a template with:
-    {
-        "blade": "%blade%",
-        "metal": "%metal%"
-    }
+Expand recipes from a grammar file:
 
-It will generate entries like:
-    broad-copper
-    thin-copper
-    broad-steel
-    thin-steel
-    ...
+```bash
+python generation.py path/to/grammar.json
+```
 
-Notes:
-------
-Templates are now pure recipe structures and can be copied and extended using `copyFrom`.
-Formats for template expansion are specified in the grammars.
-Grouped key substitution and per-grammar template modifications (remove/substitute) allow highly flexible and efficient recipe generation.
-Strict JSON parsing (-strict) is available for increased speed and validation.
+Dry-run mode (preview only):
+
+```bash
+python generation.py path/to/grammar.json -dry
+```
+
+Force strict JSON parsing:
+
+```bash
+python generation.py path/to/grammar.json -strict
+```
+
+Verbose mode (show detailed outputs):
+
+```bash
+python generation.py path/to/grammar.json -verbose
+```
+
+---
+
+## 📜 Grammar File Structure
+
+**Top-level fields:**
+
+| Field | Purpose |
+|:------|:--------|
+| `template` | Dictionary of recipe templates (direct VS recipe structure). |
+| `grammars` | List of grammar expansions defining substitutions and output format. |
+| `output` | Destination file path for the expanded JSON array. |
+| `static` | Lookup table for dynamic value injection (e.g., metal types). |
+
+---
+
+### 🛠 Template Example
+
+```json
+"template": {
+  "default": {
+    "ingredientPattern": "SH,M_,T_",
+    "ingredients": {
+      "T": { "type": "item", "code": "blade-%type%-%blade%-*" },
+      "M": { "type": "item", "code": "pommel-guard-%hilt%-%metal%" },
+      "H": { "type": "item", "code": "game:hammer-*", "isTool": true }
+    },
+    "width": 2,
+    "height": 3,
+    "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}" }
+  }
+}
+```
+
+---
+
+### 🧩 Grammar Example
+
+```json
+"grammars": [
+  {
+    "keys": [
+      { "key": "type", "value": ["sword", "dagger"] },
+      { "key": "hilt", "value": ["cross", "curve"] },
+      { "key": "blade", "value": ["broad", "thin"] },
+      { "key": "metal", "value": ["copper", "steel"] }
+    ]
+  }
+]
+```
+
+---
+
+## ⚙️ Advanced Features
+
+| Feature | Syntax Example | Purpose |
+|:--------|:----------------|:--------|
+| **Multi-key mapping** | `"key": "size,cost"` + paired list of values | Swap multiple fields together. |
+| **Remove fields** | `"remove": ["output.attributes"]` | Strip nested fields from templates during generation. |
+| **Substitute fields** | `"substitute": [{"key": "ingredients.L", "value": {...}}]` | Overwrite specific nested fields dynamically. |
+| **Template inheritance** | `"copyFrom": "baseTemplate"` | Clone and extend existing templates easily. |
+
+---
+
+## 📋 License
+
+MIT License (or feel free to modify for your own use!)
+
+---
+
+## ✨ Final Tip
+
+Need help writing grammars, debugging weird expansions, or adding future features?  
+Feel free to reach out — **good tools deserve good maintenance!**
