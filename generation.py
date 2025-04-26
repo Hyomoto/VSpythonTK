@@ -11,27 +11,36 @@ It supports:
 - Substitution of named fields across multiple permutations of materials.
 - Static lookup tables (`@metal`, `@skip`, etc.) for value injection.
 - Optional wildcard filtering via `allow` and `skip` pattern rules (using fnmatch).
+- Template inheritance using `copyFrom` for duplicating and modifying existing templates.
+- Per-grammar template mutation using `remove` and `substitute` directives.
+- Grouped multi-key substitutions (e.g., "metal,bits" mapped together).
 - Dry-run mode to preview results without generating output files.
+- Strict JSON mode (-strict) to enforce standard JSON parsing even if JSON5 is installed.
 
 Input Structure:
 ----------------
 The source JSON must include the following top-level fields:
 
-- "template": A dictionary of named templates, each with:
-    - "raw":    A JSON dictionary representing the normal recipe structure with placeholders (e.g., %metal%).
-    - "format": A string that defines how the keys from "raw" will be flattened and joined into final output.
+- "template": A dictionary of named templates, each representing the Vintage Story recipe structure directly.
+  - Templates may optionally specify a `copyFrom` field to clone and override an existing template.
 
 - "grammars": A dictionary of substitution rules. Each grammar defines:
-    - "template": (Optional) The template to use (default: "default").
-    - "keys": A list of { "key": "name", "value": [...] } entries. Values may include static lookups like "@metal".
-    - "code": Pattern matching isn't as robust as in-engine, but this is used to define the name that will be used in the allow/skip lists.
-    - "allow": A list of wildcard patterns that must match the final code (optional).
-    - "skip": A list of wildcard patterns that will exclude a code from output (optional).
+  - "keys": (Required) A list of { "key": "name", "value": [...] } entries. 
+    - Keys may be comma-separated to allow grouped substitution (e.g., "metal,bits").
+  - "code": (Optional) A format string defining the output item code. If not specified, looks for "code" in static.
+  - "format": (Optional) A format string used to map template fields into the final JSON entry. If not specified, looks for "format" in static.
+  - "template": (Optional) The template to use. If not specified, "default" is assumed.
+  - "remove": (Optional) A list of dotted key paths to delete from the template.
+  - "substitute": (Optional) A list of { "key": dotted_key, "value": replacement_value } entries to override fields before expansion.
+  - "allow": (Optional) A list of wildcard patterns to include.
+  - "skip": (Optional) A list of wildcard patterns to exclude.
 
 - "output": The file path where the result will be written (e.g., "recipes/dagger.json").
 
 - "static": A lookup table used to inject lists of values into grammars, such as:
-    "metal": ["copper", "tinbronze", "steel"]
+  "metal": ["copper", "tinbronze", "steel"]
+  - "format" : (Reserved) If specified, grammars missing a 'format' field will use this value.
+  - "code" : (Reserved) If specified, grammars missing a 'code' field will use this value.
 
 Usage:
 ------
@@ -41,40 +50,50 @@ To generate recipe files:
 To preview outputs without writing files:
     python generation.py path/to/input.json -dry
 
+To force strict JSON parsing mode:
+    python generation.py path/to/input.json -strict
+
 Examples:
 ---------
 Given a grammar with:
-    "type": "dagger"
-    "blade": "broad,thin"
-    "metal": "@metal"
+    "template": "dagger"
+    "keys": [ {"key": "metal", "value": ["@metal"]} ]
+    "code": "%type%-%blade%-%metal%"
+    "format": "%blade%-%metal%"
 
 And a template with:
-    "code": "%type%-%blade%-%metal%"
+    {
+        "blade": "%blade%",
+        "metal": "%metal%"
+    }
 
-It will generate:
-    dagger-broad-copper
-    dagger-thin-copper
-    dagger-broad-steel
-    dagger-thin-steel
+It will generate entries like:
+    broad-copper
+    thin-copper
+    broad-steel
+    thin-steel
     ...
 
-Tips/tricks:
-------------
-If you do not define code, allow or skip fields, it will attempt to use any static defined option.  This makes it easy to write
-once, reuse everywhere if required.
-
+Notes:
+------
+Templates are now pure recipe structures and can be copied and extended using `copyFrom`.
+Formats for template expansion are specified in the grammars.
+Grouped key substitution and per-grammar template modifications (remove/substitute) allow highly flexible and efficient recipe generation.
+Strict JSON parsing (-strict) is available for increased speed and validation.
 """
 from typing import TypedDict, Dict, List
 import fnmatch
 import argparse
 import platform
 import os
+import copy
+import re
 
 try:
     import json5 as json
     json5 = True
 except ImportError:
-    import json as json
+    import json
     json5 = False
 
 class Ansi:
@@ -89,14 +108,30 @@ class Ansi:
     CYAN = "\033[36m"
     GRAY = "\033[90m"
 
+class TemplateJSONTemplate(TypedDict):
+    ingredientPattern : str
+    ingredients : Dict[str,Dict[str,str]]
+    width : int
+    height : int
+    output : Dict[str,Dict[str,str]]
+
+class TemplateJSONGrammar(TypedDict, total=False):
+    template: str
+    keys: List[Dict[str,List[str]]]
+    code: str
+    allow: List[str]
+    skip: List[str]
+    substitute : List[Dict[str,str]]
+    remove : List[str]
+
 class TemplateJSON(TypedDict):
-    template : Dict[str,Dict[str, str]]
-    grammars : Dict[str, str]
+    template : TemplateJSONTemplate
+    grammars : List[TemplateJSONGrammar]
     output : str
     static : Dict[str,List[str]]
 
 class Grammar():
-    def __init__(self,definition : Dict[ str, List[Dict[str,str]]], static : Dict[str,List[str]] ):
+    def __init__(self,definition : TemplateJSONGrammar, static : Dict[str, List[str]], templates : Dict[ str, Dict ] ):
         def substitute(list : list[str],static : Dict[str,List[str]],ignore=False ):
             output = []
             for token in list:
@@ -111,21 +146,65 @@ class Grammar():
                     output.append(token)
             return output
         
-        self.template =  definition.get("template", "default")
-        
         self.keys = []
         
         if "keys" not in definition or not isinstance(definition["keys"], list):
             raise ValueError(f"Grammar definition must contain a {Ansi.YELLOW}'keys'{Ansi.RESET} list.")
-
+        
         for key in definition["keys"]:
             if "key" not in key or "value" not in key:
                 raise ValueError(f"Each key entry must contain {Ansi.YELLOW}'key'{Ansi.RESET} and {Ansi.YELLOW}'value'{Ansi.RESET}: {json.dumps(key)}")
-            self.keys.append({ "key" : key["key"], "value" : substitute(key["value"],static)})
+            keyNames = [k.strip() for k in key["key"].split(",")]
+            exValues = substitute(key["value"], static)
+            keyValues= []
+            print(keyNames)
+
+            for v in exValues:
+                if ( isinstance(v,list)):
+                    keyValues.append(v)
+                elif len(keyNames) == 1:
+                    keyValues.append([v])
+                else:
+                    raise ValueError(f"Expected list of values for keys {keyNames}, but got single value '{v}'.")
+            
+            for v in keyValues:
+                if len(v) != len(keyNames):
+                    raise ValueError(f"Mismatch: keys {keyNames} expect {len(keyNames)} values but got {v}.")
+            
+            self.keys.append({ "key" : keyNames, "value" : keyValues })
         
         self.skip = substitute(definition.get("skip", [ "@skip" ]),static,True)
         self.allow = substitute(definition.get("allow", [ "@allow" ]),static,True)
-        self.code   = substitute([definition.get("code", "@code")],static,True)[0]
+        self.substitute = definition.get( "substitute", [] )
+        self.remove = definition.get( "remove", [] )
+
+        if not isinstance(self.remove, list):
+            raise ValueError(f"Grammar 'remove' must be a list, got {type(self.remove).__name__}.")
+
+        if not isinstance(self.substitute, list):
+            raise ValueError(f"Grammar 'substitute' must be a list, got {type(self.substitute).__name__}.")
+
+        # evil hack to convert to string because statics are lists, and code expects a string
+        self.code = substitute([definition.get("code", "@code")],static,True)[0]
+
+        templateFormat = definition.get("format")
+        
+        if templateFormat is None:
+            templateFormat = static.get("format")
+        elif templateFormat.startswith("@"):
+            templateFormat = static.get(templateFormat[1:])
+        if isinstance(templateFormat,list):
+            templateFormat = templateFormat[0]
+        
+        if templateFormat is None:
+            raise ValueError(f"Grammars require a {Ansi.YELLOW}'format'{Ansi.RESET} field.")
+        
+        self.templateFormat = templateFormat
+        template =  definition.get("template", "default")
+        
+        if template is None or templates.get(template) is None:
+            raise ValueError(f"Grammar definition must contain a {Ansi.YELLOW}'template'{Ansi.RESET} field.")
+        self.template = template
 
 class RecipeExpander:
     def __init__(self, data : TemplateJSON):
@@ -134,19 +213,27 @@ class RecipeExpander:
         self.templates = {}
 
         for templateName, template in data["template"].items():
-            if "format" not in template or "raw" not in template:
-                raise ValueError(f"Template '{templateName}' must contain both {Ansi.YELLOW}'format'{Ansi.RESET} and {Ansi.YELLOW}'raw'{Ansi.RESET} fields.")
-            templateFormat = template.get("format")
-
-            unused_keys = [key for key in template["raw"] if f"%{key}%" not in templateFormat]
-            if unused_keys:
-                print(f"{Ansi.YELLOW}[!]{Ansi.RESET} Warning: Template {Ansi.YELLOW}'{templateName}'{Ansi.RESET} has unused keys in 'raw': {Ansi.YELLOW}{unused_keys}{Ansi.RESET}")
-            for key, value in template["raw"].items():
-                templateFormat = templateFormat.replace(f"%{key}%",f"\"{key}\":{json.dumps(value, separators=(",", ":"))}")
-            self.templates[templateName] = templateFormat
+            copyFrom = template.get("copyFrom")
+            if copyFrom:
+                baseTemplate = data["template"].get(copyFrom)
+                if not baseTemplate:
+                    raise ValueError(f"Template '{templateName}' tried to copy from unknown template '{copyFrom}'.")
+                
+                merged = copy.deepcopy(baseTemplate)
+                local = {k: v for k, v in template.items() if k != "copyFrom"}  # Drop "copyFrom"
+                merged.update(local)
+                
+                self.templates[templateName] = merged
+            else:
+                self.templates[templateName] = template
             
-        for grammar in data["grammars"]:
-            self.grammars.append( Grammar( grammar, data["static"] ))
+        try:
+            index = 0
+            for grammar in data["grammars"]:
+                self.grammars.append( Grammar( grammar, data["static"], self.templates ))
+                index += 1
+        except ValueError as e:
+            raise ValueError(f"Grammar {index} : {e}")
         
         self.output = data["output"]
 
@@ -155,8 +242,15 @@ class RecipeExpander:
             missing = [part for part in template.split("%") if part.endswith("%") and part[:-1] not in substitutions]
             if missing:
                 raise KeyError(f"Template contains missing substitutions: {Ansi.YELLOW}{missing}{Ansi.RESET}")
+
             for key, value in substitutions.items():
-                template = template.replace(f"%{key}%", value)
+                substitution = f"%{key}%"
+                if isinstance(value, (int,float)):
+                    template = re.sub(f'"{re.escape(substitution)}"', str(value), template)
+                    # fix for bad boys and girls who use numbers where strings are expected
+                    template = template.replace(substitution, str(value))
+                else:
+                    template = template.replace(substitution, str(value))
             return template
         
         def isAllowed(entry: str, allow: list[str], skip: list[str]) -> bool:
@@ -167,7 +261,7 @@ class RecipeExpander:
                 return any(fnmatch.fnmatch(entry, pattern) for pattern in allow)
             return True  # No allowed list means allow all
         
-        def dryCallback(grammar, result, output):
+        def dryCallback(grammar : Grammar, result, output):
             nonlocal count, verbose
             
             code = substitute(grammar.code, result)
@@ -176,24 +270,59 @@ class RecipeExpander:
                 print( f"  {code}\t [{json.dumps(result)}]" )
             count += 1
 
-        def wetCallback(grammar, result, output):
+        def wetCallback(grammar : Grammar, result, output):
+            def deep_remove(data: dict, dotted_key: str):
+                parts = dotted_key.split(".")
+                current = data
+                
+                for part in parts[:-1]:
+                    if part not in current:
+                        raise KeyError(f"Cannot remove '{dotted_key}': '{part}' does not exist.")
+                    if not isinstance(current[part], dict):
+                        raise KeyError(f"Cannot remove '{dotted_key}': '{part}' is not a dictionary.")
+                    current = current[part]
+
+                if parts[-1] not in current:
+                    raise KeyError(f"Cannot remove '{dotted_key}': final key '{parts[-1]}' does not exist.")
+
+                current.pop(parts[-1])
+
+            def deep_set(data: dict, dotted_key: str, value):
+                """Recursively set a dotted key inside a dict."""
+                parts = dotted_key.split(".")
+                for part in parts[:-1]:
+                    if part not in data or not isinstance(data[part], dict):
+                        data[part] = {}
+                    data = data[part]
+                data[parts[-1]] = value
             code = substitute(grammar.code, result)
             
             if( not isAllowed(code, grammar.allow, grammar.skip)):
                 return
             if (verbose):
                 print( f"  {code}\t [{json.dumps(result)}]" )
+            template    = copy.deepcopy(self.templates[grammar.template])
             
-            template = self.templates.get(grammar.template)
-            if not template:
-                print( f"\tSkipped '{json.dumps(result)}' as '{Ansi.YELLOW}{grammar.template}{Ansi.RESET}' template didn't exist.")
-                return
-            output.append(substitute(template, result))
+            for key in grammar.remove:
+                deep_remove(template, key)
+            for item in grammar.substitute:
+                deep_set(template, item["key"], item["value"])
+            templateFormat = grammar.templateFormat
+
+            unused_keys = [key for key in template if f"%{key}%" not in templateFormat]
+            if unused_keys:
+                print(f"{Ansi.YELLOW}[!]{Ansi.RESET} Warning: Grammar template has unused keys: {Ansi.YELLOW}{unused_keys}{Ansi.RESET}")
+            for key, value in template.items():
+                templateFormat = templateFormat.replace(f"%{key}%",f"\"{key}\":{json.dumps(value, separators=(",", ":"))}")
+            output.append(substitute(templateFormat, result))
 
         def walkSubstitutions(grammar, depth, last, table,callback, output = None):
             key = grammar.keys[depth]["key"]
-            for item in grammar.keys[depth]["value"]:
-                table[key] = item
+            values = grammar.keys[depth]["value"]
+
+            for item in values:
+                for i, swap in enumerate(key):
+                    table[swap] = item[i]
                 if depth == last:
                     callback(grammar, table, output)
                 else:
@@ -224,7 +353,10 @@ class RecipeExpander:
                 recipes = []
 
                 for grammar in self.grammars:
-                    walkSubstitutions( grammar, 0, len(grammar.keys) - 1,{}, wetCallback, recipes)
+                    if (len(grammar.keys) == 0):
+                        wetCallback(grammar,{},recipes)
+                    else:
+                        walkSubstitutions( grammar, 0, len(grammar.keys) - 1,{}, wetCallback, recipes)
 
                 file.write(f"[\n{",\n".join(recipes)}\n]")
                 
@@ -259,7 +391,12 @@ def main():
     header("🛠️  Expanding Recipes...")
     print(f"{Ansi.RESET}")
 
-    if ( json5 ):
+    if args.strict and json5:
+        import json as strict_json
+        global json
+        json = strict_json
+        print(f"{Ansi.GREEN}[Strict]{Ansi.RESET} Enforcing strict JSON parsing mode.")
+    elif ( json5 ):
         print( f"{Ansi.YELLOW}[!]{Ansi.RESET} JSON5 is available, this allows for a more relaxed format.")
     else:
         print( f"{Ansi.YELLOW}[!]{Ansi.RESET} Using strict JSON parsing, if you encounter problems\n  install json5: pip install json5")
