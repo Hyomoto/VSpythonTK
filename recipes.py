@@ -84,24 +84,14 @@ import copy
 import re
 from utils import Ansi
 import utils
+from logger import logger
+from logger import Error_Level
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 MODULE_NAME = f"{os.path.basename(__file__)}-{VERSION}".strip()
 
 def hello() -> str:
-    return utils.custom(f"{MODULE_NAME}: Performing recipe expansion...", Ansi.CYAN, "📜")
-
-class Error:
-    NONE = 0
-    READ = 1
-    WRITE = 2
-    FILE = 4
-    FILEREAD = 5
-    FILEWRITE = 6
-    JSON = 8
-    JSONREAD = 9
-    JSONWRITE = 10
-    OTHER = 16
+    return (f"{MODULE_NAME}: Performing recipe expansion...", Ansi.CYAN, "📜")
 
 class TemplateJSONTemplate(TypedDict):
     ingredientPattern : str
@@ -284,8 +274,7 @@ class RecipeExpander:
             buildItemCodes( outputKeys, grammar )
 
         for code, table in outputKeys:
-            if verbose:
-                print( f"  {code}\t [{repr(table)}]" )
+            logger.debug( f"{code}\t [{repr(table)}]" )
             if dry:
                 continue
             # Create a copy of the template for mutation
@@ -302,7 +291,7 @@ class RecipeExpander:
             
             unused_keys = [key for key in template if f"%{key}%" not in recipe]
             if unused_keys:
-                print(utils.warning(f"Grammar template has unused keys: {Ansi.YELLOW}{unused_keys}{Ansi.RESET}"))
+                logger.warning(f"Grammar template has unused keys: {Ansi.YELLOW}{unused_keys}{Ansi.RESET}")
             for key, value in template.items():
                 recipe = recipe.replace(f"%{key}%",f"\"{key}\":{json.dumps(value, separators=(",", ":"))}")
             recipes.append(substitute(recipe, table))
@@ -312,7 +301,7 @@ class RecipeExpander:
                 with open(output, "w", encoding="utf-8") as file:
                     file.write(f"[\n{",\n".join(recipes)}\n]")
             except OSError as e:
-                print(utils.error(f"Failed to write output file: {e}"))
+                logger.error(f"Failed to write output file: {e}")
         return outputKeys
         
 class RecipeGenerator:
@@ -323,23 +312,21 @@ class RecipeGenerator:
             verbose: If True, enables verbose output for debugging.
         """
         self.verbose = verbose
-        self.error  = Error.NONE
         self.json = json
 
     def batch(self, input: str, output: str, dry: bool = False, absolute: bool = False):
         # Protect against unintentional absolute paths
         if not absolute:
             if input[0] == "/" or input[0] == "\\":
-                print(utils.error("An absolute input path was provided, but absolute is not set."))
+                logger.error("An absolute input path was provided, but absolute is not set.")
                 exit(1)
             elif output[0] == "/" or output[0] == "\\":
-                print(utils.error("An absolute output path was provided, but absolute is not set."))
+                logger.error("An absolute output path was provided, but absolute is not set.")
                 exit(1)
-
-        files = utils.scanForFiles(input, "recipes")
         
+        files = utils.scanForFiles(input, "recipes", exclude=["modinfo.json"])
         if not files:
-            print(utils.error(f"No recipe files found in '{input}'. Skipping."))
+            logger.error(f"No recipe files found in '{input}'. Skipping.")
             return
         for file in files:
             input_path = os.path.join(input, file)
@@ -352,7 +339,6 @@ class RecipeGenerator:
     def run(self, input: str, output: str, dry: bool = False):
         """Runs the recipe generation process, expanding the grammar definitions into full recipes.
         If dry is True, it will only generate the keys for the recipes without writing them to a file."""
-        self.error = Error.NONE
         try:
             # Sanity check, prevent overwriting the input file
             if os.path.abspath(input) == os.path.abspath(output):
@@ -362,39 +348,24 @@ class RecipeGenerator:
                 data = self.json.load(file)
             expander = RecipeExpander(data)
             success = expander.expand(self.json, dry, self.verbose, output)
-            print(utils.success(f"Generated {len(success)} recipes from '{input}'."))
+            logger.success(f"Generated {len(success)} recipes from '{input}'.")
 
         except FileNotFoundError:
-            print(utils.error(f"File '{input}' not found. Skipping."))
-            self.error = Error.FILEREAD
-
-        except KeyError as e:
-            print(utils.error(f"Missing required key: {e}"))
-            self.error = Error.JSON
-
-        except ValueError as e:
-            print(utils.error(str(e)))
-            if str(e) == "No output file specified.":
-                self.error = Error.FILEWRITE
-            else:
-                self.error = Error.JSON
+            raise utils.FileReadError(f"File '{input}' not found. Skipping.")
 
         except PermissionError as e:
-            print(utils.error(f"Could not write output: {e}"))
-            self.error = Error.FILEWRITE
+            raise utils.FileWriteError(f"Could not write output: {e}")
 
-        finally:
-            if self.error & Error.FILE:
-                if self.error == Error.FILEREAD:
-                    print(utils.error(f"Error reading {input}. Check the filename and try again."))
-                elif self.error == Error.FILEWRITE:
-                    print(utils.error(f"Error writing {output}. Check the filename and try again."))
-            elif self.error & Error.JSON:
-                print(utils.error(f"Error parsing input Grammar. Check {input} and try again."))
+        except KeyError as e:
+            raise utils.MissingKeyError(e.args[0])
+
+        except ValueError as e:
+            raise utils.JSONParseError(str(e))
+
+        except utils.GeneratorError as e:
+            logger.error(str(e))
 
 if __name__ == "__main__":
-    # import time
-    # start_time = time.perf_counter()
     parser = argparse.ArgumentParser(description="Expands recipe grammar definitions into full recipe files for Vintage Story mods.")
     parser.add_argument("source", help="Path to the input grammar JSON (or JSON5) file.")
     parser.add_argument("output", help="Path to output the finished recipe JSON (or JSON5) file.")
@@ -404,20 +375,20 @@ if __name__ == "__main__":
     parser.add_argument("-batch", "-b", action="store_true", help="Batch process all recipe files in the input directory.")
     parser.add_argument("-absolute", "-a", action="store_true", help="Allow absolute paths for input and output directories.")
     args = parser.parse_args()
-
-    print(hello())
+    
+    logger.custom(Error_Level.INFO, *hello())
 
     # Check if JSON5 is available and not in strict mode
     if not args.strict:
         try:
             import json5
             json = json5
-            print(utils.info("JSON5 detected: relaxed parsing is available."))
+            logger.info("JSON5 detected: relaxed parsing is available.")
         except ImportError:
-            print(utils.warning("JSON5 not available. Using strict JSON parsing.\n     To enable relaxed parsing, install with: pip install json5"))
+            logger.warning("JSON5 not available. Using strict JSON parsing.\n     To enable relaxed parsing, install with: pip install json5")
             json = __import__("json")
     else:
-        print(utils.custom("Enforcing strict JSON parsing mode.", Ansi.GREEN,"🚀"))
+        logger.custom("Enforcing strict JSON parsing mode.", Ansi.GREEN,"🚀")
         json = __import__("json")
     
     generator = RecipeGenerator(json, args.verbose)
@@ -425,5 +396,3 @@ if __name__ == "__main__":
         generator.batch(args.source, args.output, args.dry, args.absolute)
     else:
         generator.run(args.source, args.output, args.dry)
-    # elapsed_time = (time.perf_counter() - start_time) * 1000  # ms
-    # print(utils.custom(f"Completed in {elapsed_time:.2f} ms.", Ansi.YELLOW, "⏱️ "))
