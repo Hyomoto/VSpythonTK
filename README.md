@@ -29,8 +29,8 @@ A modular toolset for transforming and managing JSON assets in [Vintage Story](h
 ### 1. Clone or Download
 
 ```bash
-git clone https://github.com/yourusername/vs-python-toolkit.git
-cd vs-python-toolkit
+git clone https://github.com/Hyomoto/VSpythonTK.git
+cd VSpythonTK
 ````
 
 ### 2. Setup
