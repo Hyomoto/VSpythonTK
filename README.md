@@ -1,138 +1,130 @@
-# 🛠️ Vintage Story Recipe Expander
+# Vintage Story Python Toolkit
 
-**by Devon "Hyomoto" Mullane, 2025**
+A modular toolset for transforming and managing JSON assets in [Vintage Story](https://www.vintagestory.at/), designed to streamline content creation by applying flexible grammar-driven logic to both recipe and shape files.
 
-A powerful script to expand compact **recipe grammar definitions** into fully realized **Vintage Story** mod JSON recipes.
+> Created by Devon "Hyomoto" Mullane, 2025
+
+## Features
+
+- 🔧 **Recipe Expansion**
+  - Grammar-driven template-based recipe generation
+  - Support for grouped key injection and deep field mutation
+  - Wildcard filtering (`allow`, `skip`) and template inheritance (`copyFrom`)
+
+- 📐 **Shape Mutation**
+- - Handles common ModelCreator issues (e.g., texture mismatch or stripped properties)
+  - Grammar-driven shape editing for correcting texture paths and face properties
+  - Grammar inheritance ('copyFrom')
+
+- 🧪 **Dry Run Support**
+  - Preview generated output without modifying files
+
+- 🔍 **Strict or Relaxed Parsing**
+  - Supports [JSON5](https://json5.org/) if installed, defaults to standard JSON parsing
 
 ---
 
-## ✨ Features
+## Quick Start
 
-- **Template-based generation**  
-  Define reusable recipe templates with minimal duplication.
-- **Dynamic substitution**  
-  Use named fields and static lookups to create massive variant sets.
-- **Wildcard allow/skip**  
-  Fine-grained control over which outputs are created.
-- **Template inheritance**  
-  Use `copyFrom` to clone and modify templates easily.
-- **Smart remove/substitute**  
-  Mutate nested template fields dynamically per grammar.
-- **Strict or relaxed JSON parsing**  
-  Use `-strict` to enforce JSON, or auto-detect JSON5 support.
-- **Colorized output and rich warnings**  
-  Built-in friendly CLI output for easy debugging.
+### 1. Clone or Download
 
----
+```bash
+git clone https://github.com/yourusername/vs-python-toolkit.git
+cd vs-python-toolkit
+````
 
-## 📦 Installation
+### 2. Setup
 
-> Requires Python 3.10+ (for type hinting improvements).
+Optional (for JSON5 support):
 
-Install `json5` for relaxed grammar file parsing:
 ```bash
 pip install json5
 ```
-*(Optional but allows parity with VS recipe definitions.)*
 
----
-
-## 🚀 Usage
-
-Expand recipes from a grammar file:
-
-```bash
-python generation.py path/to/grammar.json
-```
-
-Dry-run mode (preview only):
-
-```bash
-python generation.py path/to/grammar.json -dry
-```
-
-Force strict JSON parsing:
-
-```bash
-python generation.py path/to/grammar.json -strict
-```
-
-Verbose mode (show detailed outputs):
-
-```bash
-python generation.py path/to/grammar.json -verbose
-```
-
----
-
-## 📜 Grammar File Structure
-
-**Top-level fields:**
-
-| Field | Purpose |
-|:------|:--------|
-| `template` | Dictionary of recipe templates (direct VS recipe structure). |
-| `grammars` | List of grammar expansions defining substitutions and output format. |
-| `output` | Destination file path for the expanded JSON array. |
-| `static` | Lookup table for dynamic value injection (e.g., metal types). |
-
----
-
-### 🛠 Template Example
+### 3. Create a `settings.json`
 
 ```json
-"template": {
-  "default": {
-    "ingredientPattern": "SH,M_,T_",
-    "ingredients": {
-      "T": { "type": "item", "code": "blade-%type%-%blade%-*" },
-      "M": { "type": "item", "code": "pommel-guard-%hilt%-%metal%" },
-      "H": { "type": "item", "code": "game:hammer-*", "isTool": true }
-    },
-    "width": 2,
-    "height": 3,
-    "output": { "type": "item", "code": "%type%-%hilt%-%blade%-{material}" }
-  }
+{
+  "input": "./input/",
+  "output": "./output/",
+  "absolute": false
 }
 ```
 
+### 4. Run the Toolkit
+
+```bash
+python generator.py --strict --verbose
+```
+
+Use `--dry` to preview the generation process without writing output files.  Useful for making sure you've set things up correctly and your files are being found properly.
+
 ---
 
-### 🧩 Grammar Example
+## File Structure
+
+```
+.
+├── generator.py       # Entry point
+├── shapes.py          # Shape grammar processor
+├── recipes.py         # Recipe grammar processor
+├── utils.py           # Utility functions and ANSI formatting
+├── settings.json      # Configuration for input/output paths
+```
+
+---
+
+## Grammar Overview
+
+### Recipe Grammar
+
+See `recipes.py` for full documentation. Recipes use `%key%` syntax and allow:
 
 ```json
-"grammars": [
+{
+  "template": { ... },
+  "grammars": [
+    {
+      "keys": [ { "key": "metal", "value": ["copper", "steel"] } ],
+      "remove": [ ... ],
+      "substitute": [ ... ]
+    }
+  ]
+}
+```
+
+### Shape Grammar
+
+Shape grammars define what to modify and how:
+
+```json
+[
   {
-    "keys": [
-      { "key": "type", "value": ["sword", "dagger"] },
-      { "key": "hilt", "value": ["cross", "curve"] },
-      { "key": "blade", "value": ["broad", "thin"] },
-      { "key": "metal", "value": ["copper", "steel"] }
-    ]
+    "applyTo": "sword-*",
+    "textures": { "metal": "game:block/metal/ingot/iron" },
+    "elements": {
+      "faces": {
+        "keys": ["#metal"],
+        "add": { "reflectiveMode": 2 },
+        "remove": ["windMode"]
+      }
+    }
   }
 ]
 ```
 
----
-
-## ⚙️ Advanced Features
-
-| Feature | Syntax Example | Purpose |
-|:--------|:----------------|:--------|
-| **Multi-key mapping** | `"key": "size,cost"` + paired list of values | Swap multiple fields together. |
-| **Remove fields** | `"remove": ["output.attributes"]` | Strip nested fields from templates during generation. |
-| **Substitute fields** | `"substitute": [{"key": "ingredients.L", "value": {...}}]` | Overwrite specific nested fields dynamically. |
-| **Template inheritance** | `"copyFrom": "baseTemplate"` | Clone and extend existing templates easily. |
+You may use `copyFrom` to extend an existing grammar.
 
 ---
 
-## 📋 License
+## Notes
 
-MIT License (or feel free to modify for your own use!)
+* The toolkit does not modify the original files, no outputs are written when `-dry` is used.
+* Shape grammars affect only files whose name matches the `applyTo` field using Unix-style wildcards.
+* Output is written to the path defined in `settings.json`, preserving structure.
+* The individual generators can be run by themselves with additional options.
 
 ---
 
-## ✨ Final Tip
-
-Need help writing grammars, debugging weird expansions, or adding future features?  
-Feel free to reach out — **good tools deserve good maintenance!**
+## License
+MIT
