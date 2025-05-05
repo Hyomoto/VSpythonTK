@@ -1,47 +1,57 @@
 # Vintage Story Python Toolkit
 
-A modular toolset for transforming and managing JSON assets in [Vintage Story](https://www.vintagestory.at/), designed to streamline content creation by applying flexible grammar-driven logic to both recipe and shape files.
+A modular toolkit for transforming and managing JSON assets in [Vintage Story](https://www.vintagestory.at/). Designed to streamline content creation through grammar-driven logic for both shape and recipe files, with a build interface suitable for mod packaging and distribution.
 
 > Created by Devon "Hyomoto" Mullane, 2025
 
-## Features
+---
 
-- 🔧 **Recipe Expansion**
-  - Grammar-driven template-based recipe generation
-  - Support for grouped key injection and deep field mutation
-  - Wildcard filtering (`allow`, `skip`) and template inheritance (`copyFrom`)
+## ✨ Features
+
+- 🔧 **Recipe Generation**
+  - Pure template-based recipe generation (no embedded grammars)
+  - Key substitution and grouped injection with wildcard filtering
+  - Grammar inheritance via `copyFrom`
 
 - 📐 **Shape Mutation**
-- - Handles common ModelCreator issues (e.g., texture mismatch or stripped properties)
-  - Grammar-driven shape editing for correcting texture paths and face properties
-  - Grammar inheritance ('copyFrom')
+  - Grammar-driven transformation for correcting texture paths and element properties
+  - Handles common ModelCreator issues (e.g., stripped face data)
+  - Supports wildcard-based targeting and deep mutation
 
-- 🧪 **Dry Run Support**
-  - Preview generated output without modifying files
+- 🧪 **Dry Run Mode**
+  - Preview transformations without modifying files
 
-- 🔍 **Strict or Relaxed Parsing**
-  - Supports [JSON5](https://json5.org/) if installed, defaults to standard JSON parsing
+- 🧰 **Build Integration**
+  - CLI support for full build process, semantic versioning, and release packaging
+
+- 🔍 **Strict & Relaxed Parsing**
+  - Defaults to JSON; uses JSON5 if installed
+  - Controlled via `settings.json`
 
 ---
 
-## Quick Start
+## 🚀 Getting Started
 
-### 1. Clone or Download
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Hyomoto/VSpythonTK.git
 cd VSpythonTK
 ````
 
-### 2. Setup
-
-Optional (for JSON5 support):
+### 2. Install Dependencies
 
 ```bash
-pip install json5
+pip install -r requirements.txt
 ```
 
-### 3. Create a `settings.json`
+> Or install individually:
+
+```bash
+pip install json5 pydantic
+```
+
+### 3. Create `settings.json`
 
 ```json
 {
@@ -53,49 +63,38 @@ pip install json5
 
 ### 4. Run the Toolkit
 
+Use `generator.py` to run individual generators:
+
 ```bash
-python generator.py --strict --verbose
+python generator.py --generate "shapes"
 ```
 
-Use `--dry` to preview the generation process without writing output files.  Useful for making sure you've set things up correctly and your files are being found properly.
+Use `build.py` to run the full project build pipeline:
+
+```bash
+python build.py --config Release --version Minor
+```
 
 ---
 
-## File Structure
+## 📁 Project Structure
 
 ```
 .
-├── generator.py       # Entry point
+├── build.py           # High-level build and release script
+├── generator.py       # Unified content generation interface
 ├── shapes.py          # Shape grammar processor
-├── recipes.py         # Recipe grammar processor
+├── recipes.py         # Recipe generator from templates
 ├── utils.py           # Utility functions and ANSI formatting
-├── settings.json      # Configuration for input/output paths
+├── logger.py          # Logging system with verbosity levels
+├── settings.json      # Input/output configuration
 ```
 
 ---
 
-## Grammar Overview
+## 📚 Grammar Overview
 
-### Recipe Grammar
-
-See `recipes.py` for full documentation. Recipes use `%key%` syntax and allow:
-
-```json
-{
-  "template": { ... },
-  "grammars": [
-    {
-      "keys": [ { "key": "metal", "value": ["copper", "steel"] } ],
-      "remove": [ ... ],
-      "substitute": [ ... ]
-    }
-  ]
-}
-```
-
-### Shape Grammar
-
-Shape grammars define what to modify and how:
+### 📐 Shape Grammar
 
 ```json
 [
@@ -113,18 +112,74 @@ Shape grammars define what to modify and how:
 ]
 ```
 
-You may use `copyFrom` to extend an existing grammar.
+* Uses `applyTo` with wildcards
+* Targets specific faces or elements
+* Optional `copyFrom` inheritance for reuse
+
+### 🍲 Recipe Grammar
+
+```json
+[
+    {
+        "applyTo" : [ "sword.json" ],
+        "records" : [
+            {
+                "keys" : [
+                    { "key": "type", "value" : [ "sword" ] },
+                    { "key": "hilt", "value" : [ "@types" ] },
+                    { "key": "blade", "value" : [ "@guard" ] },
+                    { "key": "metal", "value" : [ "@metal" ] }
+                ]
+            },
+            {
+                "copyFrom": 0,
+                "keys": [
+                    { "key": "type", "value": ["sword"] },
+                    { "key": "hilt", "value": ["@types"] },
+                    { "key": "blade", "value": ["@guard"] }
+                ],
+                "remove": [ "output.attributes" ],
+                "substitute": [
+                    { "key": "ingredients.M.code", "value": "pommel-guard-%hilt%-*" }
+                ]
+            }
+        ]
+    },
+    {
+        "static" : {
+            "format": "\t{\n\t\t%ingredientPattern%, %copyAttributesFrom%, %width%, %height%,\n\t\t%ingredients%,\n\t\t%output%\n\t}",
+            "code" : "%type%-%hilt%-%blade%-{material}",
+            "types": [ "cross","curve","flat","rapier" ],
+            "guard": [ "broad","long","thin" ],
+            "metal": [ "copper", "tinbronze", "bismuthbronze", "blackbronze", "iron", "meteoriciron", "steel", "silver", "gold", "brass", "cupronickel", "electrum", "molybdochalkos", "chromium" ],
+            "skip": [
+                "*-long-copper",
+                "*-long-bismuthbronze",
+                "*-long-blackbronze",
+                "*-long-cupronickel",
+                "*-thin-copper",
+                "*-curve-thin-*",
+                "*-rapier-broad-*",
+                "*-rapier-long-*"
+            ]
+        }
+    }
+]
+```
+
+* Grammars are cleanly separated from the files they operate on
+---
+
+## 📝 Notes
+
+* By default paths are relative, setting absolute to True enables absolute paths
+* Outputs are written to the paths in `settings.json`
+* Use `--dry-run` to validate grammar logic before committing changes
+* Shape and recipe generators can still be used independently for low-level debugging
+* Top-level build interface (`build.py`) handles everything else
 
 ---
 
-## Notes
+## 📜 License
 
-* The toolkit does not modify the original files, no outputs are written when `-dry` is used.
-* Shape grammars affect only files whose name matches the `applyTo` field using Unix-style wildcards.
-* Output is written to the path defined in `settings.json`, preserving structure.
-* The individual generators can be run by themselves with additional options.
-
----
-
-## License
 MIT
