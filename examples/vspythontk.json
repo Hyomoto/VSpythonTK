@@ -1,0 +1,35 @@
+{
+  "name": "mymod",
+  "modinfo": "assets/modinfo.json",
+  "content": {
+    "input": "assets",
+    "output": "dist/stage/assets"
+  },
+  "stage": "dist/stage",
+  "package": {
+    "dir": "dist",
+    "zipName": "{name}-v{version}.zip"
+  },
+  "compile": {
+    "enabled": true,
+    "csproj": "mymod.csproj",
+    "configuration": "Release",
+    "targetFramework": "net10",
+    "dllName": "mymod.dll",
+    "dllOut": "dist/stage",
+    "sourceGlobs": ["**/*.cs", "**/*.csproj", "**/*.props", "**/*.targets"]
+  },
+  "hash": {
+    "cache": "dist/.vspythontk-cache.json"
+  },
+  "generators": ["recipes", "shapes"],
+  "stageExtra": [
+    {
+      "from": "assets",
+      "to": "dist/stage/assets",
+      "exclude": ["**/grammar*"]
+    }
+  ],
+  "absolute": true,
+  "strict": true
+}

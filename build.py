@@ -3,179 +3,260 @@ build.py
 
 by Devon "Hyomoto" Mullane, 2025
 
-High-level build and release interface for the Vintage Story Python Toolkit.
-This script manages compilation, versioning, file staging, and packaging of
-the project into a final distributable format.
-
-Features:
----------
-- Builds the .NET mod project using a specified configuration (Debug/Release)
-- Handles semantic versioning via direct version string or auto-increment
-- Supports cleanup of intermediate build artifacts
-- Runs content generators with project-level settings
-- Packages final release as a ZIP archive ready for deployment
+Project-rooted build and release interface for the Vintage Story Python Toolkit.
+Point at a mod directory containing vspythontk.json to stage content, run
+generators, compile the DLL (optional), and package a distributable ZIP.
 
 Usage:
 ------
-    python build.py [--config <Debug|Release>] [--version <Major|Minor|X.Y.Z>] [--clean] [--time]
-
-Notes:
-------
-- Top-level build interface; configuration is expected via files, not CLI
-- Version changes are written directly to assets/modinfo.json
-- The development/ and release/ folders are expected to follow project structure
+    python build.py <project_dir> [--config Release|Debug] [--version Major|Minor|X.Y.Z]
+    python build.py <project_dir> --force
+    python build.py <project_dir> --generate-only
+    python build.py <project_dir> --copy-to path/to/dest.zip
+    python build.py <project_dir> --clean
 """
+from __future__ import annotations
+
 import argparse
 import json
-import subprocess
-import shutil
-import zipfile
-from pathlib import Path
 import os
-import stat
-from logger import logger
-from logger import Error_Level
-from generator import main as run_generator
-from utils import Ansi
-import utils
+import shutil
+import subprocess
+from pathlib import Path
 
-PROJECT_NAME = "hmcpatch"
-VERSION = "0.2.0"
+import utils
+from generator import main as run_generator
+from hashing import evaluate_lanes, save_cache, clear_cache
+from logger import Error_Level, logger
+from packaging import copy_dll, copy_package, handle_remove_readonly, stage_content, zip_stage
+from project import TOOLKIT_VERSION, load_project
+from utils import Ansi
+
+VERSION = TOOLKIT_VERSION
 MODULE_NAME = f"{os.path.basename(__file__)}-{VERSION}".strip()
 
-ROOT = Path(__file__).resolve().parent.parent
-MODINFO_PATH = ROOT / "assets" / "modinfo.json"
 
-def hello() -> str:
+def hello() -> tuple:
     return (f"{MODULE_NAME}: Starting project build...", Ansi.CYAN, "🛠️ ")
 
-def handle_remove_readonly(func, path, _):
-    """Fallback for removing read-only or locked files on Windows."""
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
 
 class BuildError(Exception):
     """Custom exception for build script failures."""
-    pass
+
 
 class MissingFileError(BuildError):
     """Raised when a required file is missing."""
-    pass
+
 
 class InvalidVersionError(BuildError):
     """Raised when the version string is invalid."""
-    pass
 
-def get_version(modInfoPath):
-    with open(modInfoPath, 'r') as f:
-        data = json.load(f)
-    return data.get('version', '0.0.0')
 
-def set_version(modInfoPath, behavior):
-    with open(modInfoPath, 'r') as f:
+def get_version(modInfoPath: Path) -> str:
+    with open(modInfoPath, "r", encoding="utf-8") as f:
         data = json.load(f)
-    version = data.get('version', '0.0.0').split('.')
+    return data.get("version", "0.0.0")
+
+
+def set_version(modInfoPath: Path, behavior: str) -> str:
+    with open(modInfoPath, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
     if behavior == "Major":
-        version = get_version(modInfoPath).split('.')
+        version = get_version(modInfoPath).split(".")
         version[0] = str(int(version[0]) + 1)
-        version[1] = '0'
-        version[2] = '0'
+        version[1] = "0"
+        version[2] = "0"
     elif behavior == "Minor":
-        version = get_version(modInfoPath).split('.')
+        version = get_version(modInfoPath).split(".")
         version[1] = str(int(version[1]) + 1)
-        version[2] = '0'
+        version[2] = "0"
     else:
-        version = behavior.split('.')
-    
-    output = '.'.join(version)
-    data['version'] = output
+        version = behavior.split(".")
 
-    with open(modInfoPath, 'w') as f:
+    output = ".".join(version)
+    data["version"] = output
+
+    with open(modInfoPath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
+        f.write("\n")
     return output
 
-def clean_build():
-    targets = ["bin", "obj", "release"]
 
-    for folder in targets:
-        path = ROOT / folder
-        if path.exists():
-            logger.custom(Error_Level.INFO, f"Removing {folder}/", Ansi.YELLOW, "🗑️ ")
+def clean_project(project) -> None:
+    targets = [project.root / "bin", project.root / "obj", project.package_dir]
+    try:
+        project.stage.relative_to(project.package_dir)
+        stage_inside_package = True
+    except ValueError:
+        stage_inside_package = False
+    if not stage_inside_package:
+        targets.append(project.stage)
+
+    for path in targets:
+        path = path.resolve()
+        if path == project.root.resolve() or not path.exists():
+            continue
+        logger.custom(Error_Level.INFO, f"Removing {path}", Ansi.YELLOW, "🗑️ ")
+        if path.is_dir():
             shutil.rmtree(path, onexc=handle_remove_readonly)
-
+        else:
+            path.unlink()
+    clear_cache(project.hash_cache)
     logger.custom(Error_Level.INFO, "Clean complete.", Ansi.GREEN, "🧹")
 
-def run_build(config):
-    logger.custom(Error_Level.INFO, f"Building project in {config} mode...", Ansi.YELLOW, "👷‍♀️")
-    subprocess.run(["dotnet", "build", "-c", config], check=True, cwd=ROOT)
 
-def copy_output(config, target_dir):
-    source = ROOT / f"bin/{config}/net7/{PROJECT_NAME}.dll"
-    
-    if not source.exists():
-        raise MissingFileError(f"Expected output file not found: {source}")
+def run_dotnet_build(project, configuration: str) -> None:
+    csproj = project.csproj
+    if not csproj or not csproj.is_file():
+        raise MissingFileError(f"csproj not found: {csproj}")
+    logger.custom(Error_Level.INFO, f"Building {csproj.name} ({configuration})...", Ansi.YELLOW, "👷‍♀️")
+    subprocess.run(
+        ["dotnet", "build", str(csproj), "-c", configuration],
+        check=True,
+        cwd=project.root,
+    )
 
-    dest = target_dir / f"{PROJECT_NAME}.dll"
-    logger.custom(Error_Level.INFO, f"Copying {source} to {dest}",Ansi.BLUE, "🚚" )
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
 
-def zip_release(target_dir : Path, version):
-    zip_name = target_dir / f"{PROJECT_NAME}-v{version}.zip"
-    logger.custom(Error_Level.INFO, f"Zipping release folder to {zip_name.name}",Ansi.BLUE,"🧵")
-    with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(target_dir):
-            for file in files:
-                full_path = Path(root) / file
-                arcname = full_path.relative_to(target_dir)
-                zipf.write(full_path, arcname)
+def build_project(
+    project_dir: str | Path,
+    configuration: str | None = None,
+    version_behavior: str | None = None,
+    force: bool = False,
+    generate_only: bool = False,
+    copy_to: str | Path | None = None,
+) -> None:
+    project = load_project(project_dir)
+    cfg = configuration or project.config.compile.configuration
 
-def stage_release_folder():
-    dev_dir = ROOT / "development"
-    release_dir = ROOT / "release"
-    
-    if not dev_dir.exists():
-        raise MissingFileError("Development folder is missing.")
+    if not project.modinfo.is_file():
+        raise BuildError(f"modinfo not found: {project.modinfo}")
 
-    if release_dir.exists():
-        shutil.rmtree(release_dir, onexc=handle_remove_readonly)
-
-    logger.info("Staging release folder from development...")
-    shutil.copytree(dev_dir, release_dir)
-
-def build(config, version):
-    target_dir = ROOT / ("release" if config == "Release" else "development")
-    modinfo_path = modinfo_path = ROOT / "assets" / "modinfo.json"
-    if not modinfo_path.exists():
-        raise BuildError(f"Error: '{modinfo_path}' not found.")
-
-    if version and version not in ["Major", "Minor"] and not all(x.isdigit() for x in version.split('.')):
-        raise InvalidVersionError("Error: Invalid version format. Use 'Major', 'Minor' or a valid version number (e.g., 1.0.0).")
-    
-    if version:
-        version = set_version(MODINFO_PATH, args.version)
+    if version_behavior:
+        if version_behavior not in ("Major", "Minor") and not all(
+            part.isdigit() for part in version_behavior.split(".")
+        ):
+            raise InvalidVersionError(
+                "Invalid version format. Use 'Major', 'Minor', or a version number (e.g. 1.0.0)."
+            )
+        version = set_version(project.modinfo, version_behavior)
     else:
-        version = get_version(MODINFO_PATH)
-    
-    run_build(config)
-    copy_output(config, target_dir)
+        version = get_version(project.modinfo)
 
-    if config == "Release":
-        run_generator( strict = True, dry = False )
-        stage_release_folder()
-        zip_release(target_dir, version)
-    logger.success(f"Build complete! Output: {target_dir}")
+    lanes = evaluate_lanes(project, force=force)
+    content_ran = False
+    dll_ran = False
+
+    if generate_only:
+        if lanes.content_changed or force:
+            stage_content(project, clean_stage=True)
+            run_generator(
+                absolute=True,
+                strict=project.strict,
+                dry=False,
+                generators=project.generators,
+                project_dir=str(project.root),
+            )
+            save_cache(project.hash_cache, content=lanes.content, dll=None)
+            logger.success(f"Generate-only complete. Stage: {project.stage}")
+        else:
+            logger.success("Content unchanged; generate skipped.")
+        return
+
+    if lanes.content_changed or force:
+        logger.custom(Error_Level.INFO, "Content lane changed; staging and generating...", Ansi.YELLOW, "📄")
+        stage_content(project, clean_stage=True)
+        run_generator(
+            absolute=True,
+            strict=project.strict,
+            dry=False,
+            generators=project.generators,
+            project_dir=str(project.root),
+        )
+        content_ran = True
+    else:
+        logger.custom(Error_Level.INFO, "Content lane unchanged; skipping generate/stage.", Ansi.GREEN, "⏭️ ")
+
+    compile_enabled = project.config.compile.enabled and project.csproj is not None
+    if compile_enabled and (lanes.dll_changed or force):
+        logger.custom(Error_Level.INFO, "DLL lane changed; compiling...", Ansi.YELLOW, "⚙️ ")
+        # Ensure stage exists even if content was skipped (first-time dll-only change)
+        project.stage.mkdir(parents=True, exist_ok=True)
+        if not (project.stage / "modinfo.json").is_file() and project.modinfo.is_file():
+            shutil.copy2(project.modinfo, project.stage / "modinfo.json")
+            modicon = project.modinfo.parent / "modicon.png"
+            if modicon.is_file() and not (project.stage / "modicon.png").is_file():
+                shutil.copy2(modicon, project.stage / "modicon.png")
+        run_dotnet_build(project, cfg)
+        copy_dll(project, cfg)
+        dll_ran = True
+    elif not compile_enabled:
+        logger.custom(Error_Level.INFO, "Compile disabled; skipping DLL build.", Ansi.GREEN, "⏭️ ")
+    else:
+        logger.custom(Error_Level.INFO, "DLL lane unchanged; skipping compile.", Ansi.GREEN, "⏭️ ")
+
+    zip_path = project.zip_path(version)
+    needs_zip = content_ran or dll_ran or force or not zip_path.is_file()
+    # If content was skipped but stage is missing, force a content pass before zip
+    if needs_zip and not project.stage.exists():
+        logger.warning("Stage missing; running content stage/generate before zip.")
+        stage_content(project, clean_stage=True)
+        run_generator(
+            absolute=True,
+            strict=project.strict,
+            dry=False,
+            generators=project.generators,
+            project_dir=str(project.root),
+        )
+        content_ran = True
+        needs_zip = True
+
+    if needs_zip:
+        # Ensure a DLL is present in stage when compile is enabled
+        if compile_enabled and not project.dll_stage_path().is_file():
+            built = project.dll_build_path(cfg)
+            if built.is_file():
+                copy_dll(project, cfg)
+            else:
+                run_dotnet_build(project, cfg)
+                copy_dll(project, cfg)
+                dll_ran = True
+        zip_stage(project, version)
+    else:
+        logger.custom(Error_Level.INFO, f"Package up to date: {zip_path.name}", Ansi.GREEN, "⏭️ ")
+
+    if copy_to:
+        copy_package(zip_path, Path(copy_to))
+
+    save_cache(project.hash_cache, content=lanes.content, dll=lanes.dll)
+    logger.success(f"Build complete! Stage: {project.stage} | Package: {zip_path}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build and package the project.")
-    parser.add_argument('--config', choices=['Release', 'Debug'], default='Debug',
-                        help='Build configuration (default: Debug)')
-    parser.add_argument('--version', type=str,
-                        help="Set version: 'Major', 'Minor', or a version string (e.g., 1.2.3)")
-    parser.add_argument('--clean', action='store_true', help='Clean build artifacts and exit')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--time', action='store_true', help='Show elapsed time for the build process')
+    parser = argparse.ArgumentParser(description="Build and package a VSpythonTK project.")
+    parser.add_argument("project", help="Project directory containing vspythontk.json")
+    parser.add_argument(
+        "--config",
+        choices=["Release", "Debug"],
+        default=None,
+        help="dotnet build configuration (default: from vspythontk.json)",
+    )
+    parser.add_argument(
+        "--version",
+        type=str,
+        help="Set version: 'Major', 'Minor', or a version string (e.g. 1.2.3)",
+    )
+    parser.add_argument("--force", action="store_true", help="Ignore hash cache and rebuild all lanes")
+    parser.add_argument("--generate-only", action="store_true", help="Only stage and run content generators")
+    parser.add_argument(
+        "--copy-to",
+        type=str,
+        default=None,
+        help="Copy the built package zip to a file path or directory after packaging",
+    )
+    parser.add_argument("--clean", action="store_true", help="Clean build artifacts and exit")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--time", action="store_true", help="Show elapsed time for the build process")
     args = parser.parse_args()
 
     if args.debug:
@@ -184,22 +265,36 @@ if __name__ == "__main__":
 
     logger.custom(Error_Level.INFO, *hello())
 
+    timer = None
     if args.time:
         timer = utils.Timer().start()
 
     try:
+        project = load_project(args.project)
         if args.clean:
-            clean_build()
+            clean_project(project)
             logger.success("Clean complete.")
         else:
-            build(args.config, args.version)
+            build_project(
+                args.project,
+                configuration=args.config,
+                version_behavior=args.version,
+                force=args.force,
+                generate_only=args.generate_only,
+                copy_to=args.copy_to,
+            )
     except BuildError as e:
         logger.error(e)
+        raise SystemExit(1) from e
+    except FileNotFoundError as e:
+        logger.error(e)
+        raise SystemExit(1) from e
     except subprocess.CalledProcessError as e:
         logger.error(e)
+        raise SystemExit(1) from e
 
     logger.save()
 
-    if args.time:
+    if timer:
         timer.stop()
         logger.custom(Error_Level.INFO, f"Completed in {timer.elapsed()*1000:.2f} ms.", Ansi.YELLOW, "⏱️ ")

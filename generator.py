@@ -16,16 +16,18 @@ Features:
 
 Usage:
 ------
-    python generator.py [--dry-run] [--verbose] [--strict] [--absolute] [--generate <name>]
+    python generator.py <project_dir> [--dry-run] [--verbose] [--strict] [--generate <name>]
+    python generator.py --input <dir> --output <dir> [--generate <name>]
 
 Notes:
 ------
-- Input and output paths can be set in settings.json or passed via CLI
+- Prefer a project directory containing vspythontk.json
+- Legacy settings.json (cwd) is used only when no project path is given
 - Strict mode enforces standard JSON and may improve performance but files must adhere
   to strict JSON rules (e.g., no comments, trailing commas)
 """
 from pydantic import ValidationError, BaseModel
-from typing import List, Dict
+from typing import List, Optional
 from utils import Ansi
 from utils import scanForDirectories
 from utils import scanForFiles
@@ -39,7 +41,7 @@ import fnmatch
 import os
 import re
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 MODULE_NAME = f"{os.path.basename(__file__)}-{VERSION}".strip()
 GENERATORS = ["shapes", "recipes"]
 
@@ -238,23 +240,24 @@ class BaseGenerator(ABC):
             self.run(source, output, dry)
 
     def batch(self, input: str, output: str, dryRun: bool = False):
-        # Protect against unintentional absolute paths
+        input_path = Path(input)
+        output_path = Path(output)
         if not self.absolute:
-            if input[0] == "/" or input[0] == "\\":
-                logger.error("An absolute input path was provided, but absolute is set to false. Please check your settings.json file.")
-                exit(1)
-            elif output[0] == "/" or output[0] == "\\":
-                logger.error("An absolute output path was provided, but absolute is set to false. Please check your settings.json file.")
+            if input_path.is_absolute() or output_path.is_absolute():
+                logger.error(
+                    "An absolute path was provided, but absolute is set to false. "
+                    "Pass --absolute or set absolute: true in vspythontk.json."
+                )
                 exit(1)
 
-        folders = self.getDirectories(input)
+        folders = self.getDirectories(str(input_path))
         if not folders:
-            logger.error(f"No {self.NAME} files found in '{input}'. Skipping.")
+            logger.error(f"No {self.NAME} files found in '{input_path}'. Skipping.")
             return
-        
+
         for folder in folders:
-            inputPath = os.path.join(input, folder)
-            outputPath = os.path.join(output, folder)
+            inputPath = os.path.join(str(input_path), folder)
+            outputPath = os.path.join(str(output_path), folder)
             self.run(inputPath, outputPath, dryRun)
 
     def run(self, input: str, output: str, dry: bool = False):
@@ -293,6 +296,7 @@ class BaseGenerator(ABC):
                         final = grammar.apply(raw, self.json)
                         if not dry:
                             outPath = Path(output) / filename
+                            outPath.parent.mkdir(parents=True, exist_ok=True)
                             with open(outPath, "w", encoding="utf-8") as outf:
                                 if isinstance(final, str):
                                     outf.write(final)
@@ -379,35 +383,74 @@ def runGenerators(generators: List[str], json, input: str, output: str, absolute
             continue
         generator(json, absolute).batch(input, output, dry)
 
-def main(absolute: bool = False, strict: bool = False, dry: bool = False, generators: List[str] = GENERATORS):
+def main(
+    absolute: bool = False,
+    strict: bool = False,
+    dry: bool = False,
+    generators: Optional[List[str]] = None,
+    project_dir: Optional[str] = None,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+):
     logger.custom(Error_Level.INFO, *hello())
 
-    # get settings from settings.json
     import json
-    settings = getSettings(json, "settings.json")
-    
-    # Check if JSON5 is available
-    json = getJSON(strict)
-    
-    input = settings.get("input", "./input/")
-    output = settings.get("output", "./output/")
-    absolute = absolute or settings.get("absolute", False)
-    strict = strict or settings.get("strict", False)
-    
-    # Check if input and output directories exist
-    if not os.path.exists(input):
-        logger.error(f"Input directory {input} does not exist.")
+
+    input_dir = input_path
+    output_dir = output_path
+    absolute_flag = absolute
+    strict_flag = strict
+    selected = generators
+
+    if project_dir:
+        from project import load_project
+
+        project = load_project(project_dir)
+        input_dir = input_dir or str(project.content_input)
+        output_dir = output_dir or str(project.content_output)
+        absolute_flag = True if absolute else project.absolute
+        strict_flag = strict or project.strict
+        if selected is None:
+            selected = project.generators
+        logger.custom(
+            Error_Level.INFO,
+            f"Using project {project.root} ({project.name})",
+            Ansi.GREEN,
+            "📄",
+        )
+    elif input_dir is None or output_dir is None:
+        settings = getSettings(json, "settings.json")
+        input_dir = input_dir or settings.get("input", "./input/")
+        output_dir = output_dir or settings.get("output", "./output/")
+        absolute_flag = absolute_flag or settings.get("absolute", False)
+        strict_flag = strict_flag or settings.get("strict", False)
+
+    if selected is None:
+        selected = GENERATORS
+
+    json_module = getJSON(strict_flag)
+
+    if not os.path.exists(input_dir):
+        logger.error(f"Input directory {input_dir} does not exist.")
         exit(1)
-    if not os.path.exists(output):
-        logger.info(f"Output directory {output} does not exist, creating it.")
-        os.makedirs(output)
-    
-    runGenerators(generators, json, input, output, absolute, dry )
+    if not os.path.exists(output_dir):
+        logger.info(f"Output directory {output_dir} does not exist, creating it.")
+        os.makedirs(output_dir)
+
+    runGenerators(selected, json_module, input_dir, output_dir, absolute_flag, dry)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Expands recipe grammar definitions into full recipe files for Vintage Story mods."
+        description="Run VSpythonTK content generators for a project or explicit paths."
     )
+    parser.add_argument(
+        "project",
+        nargs="?",
+        help="Project directory containing vspythontk.json",
+    )
+    parser.add_argument("-i", "--input", dest="input_path", help="Override content input directory")
+    parser.add_argument("-o", "--output", dest="output_path", help="Override content output directory")
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview changes without writing output.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output.")
     parser.add_argument("-s", "--strict", action="store_true", help="Use strict JSON parsing only.")
@@ -415,7 +458,7 @@ if __name__ == "__main__":
     parser.add_argument("-g", "--generate", choices=["shapes", "recipes", "all"], help="Only run the specified generator.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
-    
+
     if args.debug:
         logger.enableDebug = True
         logger.custom(Error_Level.INFO, "Debugging is enabled.", Ansi.YELLOW, "🐞")
@@ -423,11 +466,19 @@ if __name__ == "__main__":
     if args.verbose:
         logger.level = Error_Level.VERBOSE
 
+    selected = None
+    if args.generate and args.generate != "all":
+        selected = [args.generate]
+    elif args.generate == "all":
+        selected = GENERATORS
+
     main(
-        args.absolute,
-        args.strict,
-        args.dry_run,
-        [args.generate] if args.generate and args.generate != "all" else GENERATORS
+        absolute=args.absolute,
+        strict=args.strict,
+        dry=args.dry_run,
+        generators=selected,
+        project_dir=args.project,
+        input_path=args.input_path,
+        output_path=args.output_path,
     )
     logger.save()
-    

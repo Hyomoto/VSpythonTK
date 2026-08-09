@@ -1,100 +1,134 @@
 # Vintage Story Python Toolkit
 
-A modular toolkit for transforming and managing JSON assets in [Vintage Story](https://www.vintagestory.at/). Designed to streamline content creation through grammar-driven logic for both shape and recipe files, with a build interface suitable for mod packaging and distribution.
+A modular toolkit for transforming and packaging JSON assets in [Vintage Story](https://www.vintagestory.at/). Point the toolkit at a mod project directory containing `vspythontk.json` to generate recipes/shapes, optionally compile a DLL, and produce a release ZIP—with hash-based skip for unchanged content vs code.
 
 > Created by Devon "Hyomoto" Mullane, 2025
 
 ---
 
-## ✨ Features
+## Features
 
-- 🔧 **Recipe Generation**
-  - Pure template-based recipe generation (no embedded grammars)
-  - Key substitution and grouped injection with wildcard filtering
-  - Grammar inheritance via `copyFrom`
-
-- 📐 **Shape Mutation**
-  - Grammar-driven transformation for correcting texture paths and element properties
-  - Handles common ModelCreator issues (e.g., stripped face data)
-  - Supports wildcard-based targeting and deep mutation
-
-- 🧪 **Dry Run Mode**
-  - Preview transformations without modifying files
-
-- 🧰 **Build Integration**
-  - CLI support for full build process, semantic versioning, and release packaging
-
-- 🔍 **Strict & Relaxed Parsing**
-  - Defaults to JSON; uses JSON5 if installed
-  - Controlled via `settings.json`
+- **Recipe generation** — template expansion with `@tables`, `%tokens%`, `copyFrom`, allow/skip
+- **Shape mutation** — grammar-driven texture and face property fixes
+- **Project-rooted builds** — one config file in the mod; toolkit runs from its own install
+- **Packaging** — stage assets, compile DLL, zip for distribution
+- **Hash cache** — separate content and DLL lanes; skip work when inputs are unchanged
+- **Dry run** — preview generator output without writing files
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
-### 1. Clone the Repository
+### 1. Install dependencies
 
 ```bash
-git clone https://github.com/Hyomoto/VSpythonTK.git
 cd VSpythonTK
-````
-
-### 2. Install Dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-> Or install individually:
+### 2. Add `vspythontk.json` to your mod root
+
+See [examples/vspythontk.json](examples/vspythontk.json). Paths are relative to the project directory (the folder that contains the config).
+
+### 3. Run the toolkit (from the VSpythonTK folder)
 
 ```bash
-pip install json5 pydantic
+# Full pipeline: stage → generate → compile → zip
+python build.py path/to/mod
+
+python build.py path/to/mod --config Release --version Minor
+python build.py path/to/mod --force
+python build.py path/to/mod --generate-only
+python build.py path/to/mod --copy-to path/to/Mods/mymod.zip
+python build.py path/to/mod --clean
+
+# Generators only
+python generator.py path/to/mod
+python generator.py path/to/mod --dry-run --generate recipes
+python generator.py --input path/to/mod/assets --output path/to/mod/dist/stage/assets --absolute
 ```
 
-### 3. Create `settings.json`
-
-```json
-{
-  "input": "./input/",
-  "output": "./output/",
-  "absolute": false
-}
-```
-
-### 4. Run the Toolkit
-
-Use `generator.py` to run individual generators:
-
-```bash
-python generator.py --generate "shapes"
-```
-
-Use `build.py` to run the full project build pipeline:
-
-```bash
-python build.py --config Release --version Minor
-```
+Playtest by pointing Vintage Story at `dist/stage` (or whatever you set as `stage`). The ZIP is written under `package.dir`. Use `--copy-to` to also copy that zip to a file path or directory (e.g. your Mods folder) after packaging.
 
 ---
 
-## 📁 Project Structure
+## Project layout
+
+```
+mymod/
+├── vspythontk.json      # Toolkit project config
+├── mymod.csproj         # Optional; disable compile if content-only
+├── assets/              # Authoring source (grammars, templates, patches, …)
+│   └── modinfo.json     # Or at project root; optional sibling modicon.png
+└── dist/                # Build output (created by toolkit)
+    ├── stage/           # Playable mod tree
+    ├── mymod-v1.0.0.zip
+    └── .vspythontk-cache.json
+```
+
+`modinfo.json` is staged at the mod root. If `modicon.png` sits beside it, it is staged too.
+
+Grammars stay co-located with the files they transform (`grammar*.json` beside templates/shapes). Grammar files are excluded from the staged package.
+
+---
+
+## Config overview
+
+| Field | Purpose |
+|-------|---------|
+| `content.input` / `content.output` | Generator source and destination |
+| `stage` | Full staged mod directory (zip root) |
+| `package.dir` / `zipName` | Where to write `{name}-v{version}.zip` |
+| `compile` | `enabled`, `csproj`, `targetFramework`, `dllOut`, … |
+| `hash.cache` | Persisted content/dll SHA-256 digests |
+| `generators` | `recipes` and/or `shapes` |
+| `stageExtra` | Copy rules into stage (`exclude` defaults to `**/grammar*`) |
+
+Set `"compile": { "enabled": false }` (or omit `csproj`) for content-only mods.
+
+---
+
+## Hash lanes
+
+| Lane | When it runs | Skipped when |
+|------|--------------|--------------|
+| **content** | Stage copies + recipe/shape generators | Content inputs unchanged |
+| **dll** | `dotnet build` + copy DLL into stage | C# / csproj inputs unchanged |
+
+`--force` rebuilds both. If both are skipped and the ZIP already exists, the build reports up to date.
+
+---
+
+## Toolkit modules
 
 ```
 .
-├── build.py           # High-level build and release script
-├── generator.py       # Unified content generation interface
+├── build.py           # Project build / package orchestrator
+├── generator.py       # Content generators entry point
+├── project.py         # vspythontk.json load + path resolve
+├── packaging.py       # Stage copy, DLL place, zip
+├── hashing.py         # Content / DLL hash cache
 ├── shapes.py          # Shape grammar processor
-├── recipes.py         # Recipe generator from templates
-├── utils.py           # Utility functions and ANSI formatting
-├── logger.py          # Logging system with verbosity levels
-├── settings.json      # Input/output configuration
+├── recipes.py         # Recipe generator
+├── utils.py           # Scanning and deep mutation helpers
+├── logger.py          # Logging
+└── examples/          # Sample project config
 ```
+
+Low-level per-folder CLIs still work:
+
+```bash
+python recipes.py input_dir output_dir --batch
+python shapes.py input_dir output_dir --batch --dry-run
+```
+
+Legacy cwd `settings.json` is only used when `generator.py` is run without a project path.
 
 ---
 
-## 📚 Grammar Overview
+## Grammar overview
 
-### 📐 Shape Grammar
+### Shape grammar
 
 ```json
 [
@@ -112,74 +146,12 @@ python build.py --config Release --version Minor
 ]
 ```
 
-* Uses `applyTo` with wildcards
-* Targets specific faces or elements
-* Optional `copyFrom` inheritance for reuse
+### Recipe grammar
 
-### 🍲 Recipe Grammar
-
-```json
-[
-    {
-        "applyTo" : [ "sword.json" ],
-        "records" : [
-            {
-                "keys" : [
-                    { "key": "type", "value" : [ "sword" ] },
-                    { "key": "hilt", "value" : [ "@types" ] },
-                    { "key": "blade", "value" : [ "@guard" ] },
-                    { "key": "metal", "value" : [ "@metal" ] }
-                ]
-            },
-            {
-                "copyFrom": 0,
-                "keys": [
-                    { "key": "type", "value": ["sword"] },
-                    { "key": "hilt", "value": ["@types"] },
-                    { "key": "blade", "value": ["@guard"] }
-                ],
-                "remove": [ "output.attributes" ],
-                "substitute": [
-                    { "key": "ingredients.M.code", "value": "pommel-guard-%hilt%-*" }
-                ]
-            }
-        ]
-    },
-    {
-        "static" : {
-            "format": "\t{\n\t\t%ingredientPattern%, %copyAttributesFrom%, %width%, %height%,\n\t\t%ingredients%,\n\t\t%output%\n\t}",
-            "code" : "%type%-%hilt%-%blade%-{material}",
-            "types": [ "cross","curve","flat","rapier" ],
-            "guard": [ "broad","long","thin" ],
-            "metal": [ "copper", "tinbronze", "bismuthbronze", "blackbronze", "iron", "meteoriciron", "steel", "silver", "gold", "brass", "cupronickel", "electrum", "molybdochalkos", "chromium" ],
-            "skip": [
-                "*-long-copper",
-                "*-long-bismuthbronze",
-                "*-long-blackbronze",
-                "*-long-cupronickel",
-                "*-thin-copper",
-                "*-curve-thin-*",
-                "*-rapier-broad-*",
-                "*-rapier-long-*"
-            ]
-        }
-    }
-]
-```
-
-* Grammars are cleanly separated from the files they operate on
----
-
-## 📝 Notes
-
-* By default paths are relative, setting absolute to True enables absolute paths
-* Outputs are written to the paths in `settings.json`
-* Use `--dry-run` to validate grammar logic before committing changes
-* Shape and recipe generators can still be used independently for low-level debugging
-* Top-level build interface (`build.py`) handles everything else
+See the README history / `recipes.py` docstring for full `records`, `static`, `copyFrom`, `remove`, and `substitute` examples. Templates are normal Vintage Story recipe objects with `%key%` placeholders.
 
 ---
 
-## 📜 License
+## License
 
 MIT
