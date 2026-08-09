@@ -16,6 +16,8 @@ from typing import Iterable, List
 from logger import Error_Level, logger
 from project import ResolvedProject
 from utils import Ansi
+from utils import load_ignore_rules
+from utils import matches_buildignore
 
 
 def handle_remove_readonly(func, path, _):
@@ -25,22 +27,38 @@ def handle_remove_readonly(func, path, _):
 
 def _matches_any(rel: str, patterns: Iterable[str]) -> bool:
     name = Path(rel).name
+    stem = Path(rel).stem
     posix = rel.replace("\\", "/")
     for pattern in patterns:
-        if fnmatch.fnmatch(posix, pattern) or fnmatch.fnmatch(name, pattern):
+        if (
+            fnmatch.fnmatch(posix, pattern)
+            or fnmatch.fnmatch(name, pattern)
+            or fnmatch.fnmatch(stem, pattern)
+        ):
             return True
     return False
 
 
+def _ignored_by_buildignore(path: Path) -> bool:
+    """Apply parent-directory `.buildignore` (stem-aware). Never stage the ignore file itself."""
+    if path.name == ".buildignore":
+        return True
+    ignore_file = path.parent / ".buildignore"
+    if not ignore_file.is_file():
+        return False
+    return matches_buildignore(path.name, load_ignore_rules(ignore_file))
+
+
 def copy_tree_filtered(source: Path, dest: Path, exclude: List[str]) -> int:
-    """Copy files from source to dest, skipping exclude patterns. Returns file count."""
+    """Copy files from source to dest, skipping exclude patterns and nested `.buildignore`."""
     if not source.exists():
         raise FileNotFoundError(f"Stage source not found: {source}")
 
     copied = 0
     if source.is_file():
-        rel = source.name
-        if _matches_any(rel, exclude):
+        if source.name == ".buildignore" or _matches_any(source.name, exclude):
+            return 0
+        if _ignored_by_buildignore(source):
             return 0
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
@@ -49,8 +67,12 @@ def copy_tree_filtered(source: Path, dest: Path, exclude: List[str]) -> int:
     for path in source.rglob("*"):
         if not path.is_file():
             continue
+        if path.name == ".buildignore":
+            continue
         rel = path.relative_to(source).as_posix()
         if _matches_any(rel, exclude):
+            continue
+        if _ignored_by_buildignore(path):
             continue
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)

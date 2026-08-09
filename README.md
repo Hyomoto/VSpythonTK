@@ -9,7 +9,7 @@ A modular toolkit for transforming and packaging JSON assets in [Vintage Story](
 ## Features
 
 - **Recipe generation** — template expansion with `@tables`, `%tokens%`, `copyFrom`, allow/skip
-- **Shape mutation** — grammar-driven texture and face property fixes
+- **Shape mutation / composition** — grammar-driven texture and face fixes, plus optional cleanup + part compositing (`generate` / `mods`)
 - **Project-rooted builds** — one config file in the mod; toolkit runs from its own install
 - **Packaging** — stage assets, compile DLL, zip for distribution
 - **Hash cache** — separate content and DLL lanes; skip work when inputs are unchanged
@@ -69,6 +69,8 @@ mymod/
 `modinfo.json` is staged at the mod root. If `modicon.png` sits beside it, it is staged too.
 
 Grammars stay co-located with the files they transform (`grammar*.json` beside templates/shapes). Grammar files are excluded from the staged package.
+
+A folder may include `.buildignore` (fnmatch patterns, stem-aware — e.g. `thin` matches `thin.json`). That file only excludes paths from dumb copy / `stageExtra` staging; grammar discovery, `applyTo`, and `generate` still see ignored inputs and can emit mutated/composited outputs. `.buildignore` itself is never staged.
 
 ---
 
@@ -130,16 +132,59 @@ Legacy cwd `settings.json` is only used when `generator.py` is run without a pro
 
 ### Shape grammar
 
+Mutate matching inputs into the output folder (`applyTo`):
+
 ```json
 [
   {
-    "applyTo": "sword-*",
+    "applyTo": ["sword-*"],
     "textures": { "metal": "game:block/metal/ingot/iron" },
     "elements": {
-      "faces": {
-        "keys": ["#metal"],
-        "add": { "reflectiveMode": 2 },
-        "remove": ["windMode"]
+      "faces": [
+        {
+          "keys": ["#metal"],
+          "add": { "reflectiveMode": 2 },
+          "remove": ["windMode"]
+        }
+      ]
+    }
+  }
+]
+```
+
+Compose finished shapes from part files in the same folder (`cleanup` / `generate` / `mods`). Cleanup deletes matching files in the **output** directory only. Generate writes composites to output and does not copy unmatched source parts when `generate` is present. Named `mods` are reusable mutation blocks; `"mods": ["*"]` applies all of them in definition order.
+
+```json
+[
+  { "cleanup": ["sword-*", "sword-rapier"] },
+  {
+    "generate": [
+      {
+        "name": "sword-{handle}-{blade}",
+        "targets": {
+          "blade": ["broad", "long", "thin"],
+          "handle": ["cross", "curve", "flat"]
+        },
+        "mods": ["*"]
+      },
+      {
+        "name": "sword-rapier",
+        "targets": { "blade": ["thin"], "handle": ["rapier"] },
+        "mods": ["base"]
+      }
+    ],
+    "mods": {
+      "base": {
+        "textures": { "metal": "game:block/metal/ingot/iron" },
+        "elements": {
+          "faces": [
+            {
+              "keys": ["#metal"],
+              "add": { "reflectiveMode": 2 },
+              "remove": ["windMode"]
+            }
+          ]
+        }
       }
     }
   }

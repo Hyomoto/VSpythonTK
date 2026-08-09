@@ -29,6 +29,8 @@ Notes:
 from pydantic import ValidationError, BaseModel
 from typing import List, Optional
 from utils import Ansi
+from utils import load_ignore_rules
+from utils import matches_buildignore
 from utils import scanForDirectories
 from utils import scanForFiles
 from logger import logger
@@ -197,6 +199,8 @@ class BaseGenerator(ABC):
     def __init__(self, json_module, absolute=False):
         self.json = json_module
         self.absolute = absolute
+        self._folders_visited = 0
+        self._folders_with_grammar = 0
     
     @property
     @abstractmethod
@@ -217,11 +221,19 @@ class BaseGenerator(ABC):
         return folders
     
     def getFiles(self, directory, exclude=[], filetypes=(".json", "json5")) -> list[str]:
-        files = scanForFiles(directory, filetypes=filetypes, exclude=exclude)
+        # Discover full folder; .buildignore only filters copy/stage, not grammar mutation
+        files = scanForFiles(
+            directory, filetypes=filetypes, exclude=exclude, apply_buildignore=False
+        )
         return files
     
     def copySkippedFiles(self, skipped, input, output):
+        ignore_patterns = load_ignore_rules(Path(input) / ".buildignore")
         for filename in skipped:
+            name = Path(filename).name
+            if name == ".buildignore" or matches_buildignore(name, ignore_patterns):
+                logger.verbose(f"Copy skip (buildignore): '{filename}'")
+                continue
             shape_path = os.path.join(input, filename)
             out_path = os.path.join(output, filename)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -255,30 +267,43 @@ class BaseGenerator(ABC):
             logger.error(f"No {self.NAME} files found in '{input_path}'. Skipping.")
             return
 
+        self._folders_visited = 0
+        self._folders_with_grammar = 0
         for folder in folders:
             inputPath = os.path.join(str(input_path), folder)
             outputPath = os.path.join(str(output_path), folder)
             self.run(inputPath, outputPath, dryRun)
 
+        logger.custom(
+            Error_Level.INFO,
+            f"{self.NAME}: {self._folders_visited} folder(s), "
+            f"{self._folders_with_grammar} with grammar",
+            Ansi.CYAN,
+            "📂",
+        )
+
     def run(self, input: str, output: str, dry: bool = False):
         if os.path.abspath(input) == os.path.abspath(output):
             raise ValueError("Input and output paths must not be the same.")
 
+        self._folders_visited += 1
         files = self.getFiles(input, filetypes=(".json", ".json5"))
-        grammars = [f for f in files if f.startswith("grammar")]
-        targets = [f for f in files if f not in grammars]
+        grammars = [f for f in files if Path(f).name.startswith("grammar")]
+        targets = [Path(f).name for f in files if not Path(f).name.startswith("grammar")]
 
-        if not targets:
+        if grammars:
+            self._folders_with_grammar += 1
+
+        if not targets and not grammars:
             return
 
         if not grammars:
-            logger.warning(f"No grammar file found in '{input}'. Ignoring.")
             self.copySkippedFiles(targets, input, output)
             return
 
         grammarObj = self.GRAMMAR_JSON()
         for grammar in grammars:
-            grammarPath = os.path.join(input, grammar)
+            grammarPath = os.path.join(input, Path(grammar).name)
             try:
                 with open(grammarPath, "r", encoding="utf-8") as f:
                     grammarObj = grammarObj.load(self.json.load(f))
@@ -309,7 +334,12 @@ class BaseGenerator(ABC):
         skipped = [f for f in targets if f not in matched]
         if skipped:
             self.copySkippedFiles(skipped, input, output)
-            logger.warning(f"   Skipped files: {', '.join(skipped)}")
+            copied = [
+                f for f in skipped
+                if not matches_buildignore(f, load_ignore_rules(Path(input) / ".buildignore"))
+            ]
+            if copied:
+                logger.warning(f"   Skipped files: {', '.join(copied)}")
 
 def getJSON(strict: bool):
     if strict:

@@ -67,6 +67,17 @@ def load_ignore_rules(ignore_file=".buildignore"):
             patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     return patterns
 
+def matches_buildignore(name: str, patterns: list[str]) -> bool:
+    """True if basename or stem matches any ignore pattern (stem-aware for bare names like `thin`)."""
+    if not patterns:
+        return False
+    basename = Path(name).name
+    stem = Path(name).stem
+    for pat in patterns:
+        if fnmatch.fnmatch(basename, pat) or fnmatch.fnmatch(stem, pat):
+            return True
+    return False
+
 def scanForDirectories(
     directory: str,
     folders: str | list[str],
@@ -104,16 +115,14 @@ def scanForFiles(
     directory: str,
     folders: str | list[str] | None = None,
     filetypes: tuple[str] = (".json", ".json5"),
-    exclude: list[str] = []
+    exclude: list[str] = [],
+    apply_buildignore: bool = False,
 ) -> list[str]:
     """
-    Collects all JSON files within a directory structure and returns their full and relative paths.
+    Collects all JSON files within a directory structure and returns their relative paths.
 
-    Used to retrieve a list of every file under a given directory or set of directories. If a single
-    folder is given, a flat list is returned. If multiple folders are passed, a dictionary is
-    returned mapping each folder name to its list.
-
-    Directories listed in 'exclude' will be skipped. Default is ['__pycache__'].
+    `.buildignore` is opt-in via apply_buildignore: generators discover the full folder
+    (so grammar can still mutate ignored parts); copy/stage paths apply ignore separately.
     """
     if folders:
         search = scanForDirectories(directory, folders, exclude)
@@ -122,15 +131,28 @@ def scanForFiles(
         search = [directory]
     output = []
     
-    ignore_file = Path(directory) / ".buildignore"
-    local_exclude = exclude + load_ignore_rules(ignore_file) if ignore_file.exists() else exclude
+    ignore_patterns = []
+    if apply_buildignore:
+        ignore_file = Path(directory) / ".buildignore"
+        if ignore_file.exists():
+            ignore_patterns = load_ignore_rules(ignore_file)
+    local_exclude = list(exclude)
     
     for dir in search:
+        dir_patterns = ignore_patterns
+        if apply_buildignore:
+            dir_ignore = Path(dir) / ".buildignore"
+            if dir_ignore.exists():
+                dir_patterns = ignore_patterns + load_ignore_rules(dir_ignore)
         for entry in Path(dir).iterdir():
-            # if the entry is a file and has the correct extension, add it to the list
-            if entry.is_file() and entry.suffix in filetypes and not any(fnmatch.fnmatch(entry.name, pat) for pat in local_exclude):
-                rel = entry.relative_to(directory)
-                output.append(str(rel))
+            if not entry.is_file() or entry.suffix not in filetypes:
+                continue
+            if any(fnmatch.fnmatch(entry.name, pat) for pat in local_exclude):
+                continue
+            if apply_buildignore and matches_buildignore(entry.name, dir_patterns):
+                continue
+            rel = entry.relative_to(directory)
+            output.append(str(rel))
     return output
 
 def deep_remove(data: dict, path: str):
